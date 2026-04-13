@@ -10,7 +10,7 @@ import os
 # ─── Config ───────────────────────────────────────────────
 BOT_TOKEN            = os.environ["BOT_TOKEN"]
 SHEET_NAME           = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
-SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE", "winstree-moderation@winstree-moderation-bot.iam.gserviceaccount.com")
+SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE", "winstree-moderation-bot-b1041820b277.json")
 # ──────────────────────────────────────────────────────────
 
 SCOPES = [
