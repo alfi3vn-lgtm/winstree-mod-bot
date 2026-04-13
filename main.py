@@ -6,11 +6,14 @@ from google.oauth2.service_account import Credentials
 import datetime
 import pytz
 import os
+import json
 
 # ─── Config ───────────────────────────────────────────────
-BOT_TOKEN            = os.environ["BOT_TOKEN"]
-SHEET_NAME           = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
-SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE", "winstree-moderation-bot-b1041820b277.json")
+BOT_TOKEN  = os.environ["BOT_TOKEN"]
+SHEET_NAME = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
+
+# Load Google credentials from the JSON env var
+_service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 # ──────────────────────────────────────────────────────────
 
 SCOPES = [
@@ -18,7 +21,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-creds         = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+creds         = Credentials.from_service_account_info(_service_account_info, scopes=SCOPES)
 gc            = gspread.authorize(creds)
 timeout_sheet = gc.open(SHEET_NAME).worksheet("Timeout Logs")
 warn_sheet    = gc.open(SHEET_NAME).worksheet("Warn Logs")
