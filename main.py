@@ -35,7 +35,7 @@ MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
 # A user qualifies for a spam timeout if they send more than
 # SPAM_MESSAGE_LIMIT messages within SPAM_WINDOW_SECONDS seconds
 # in any monitored channel.
-SPAM_MESSAGE_LIMIT   = 5    # messages
+SPAM_MESSAGE_LIMIT   = 4    # messages
 SPAM_WINDOW_SECONDS  = 5    # seconds
 SPAM_TIMEOUT_MINUTES = 10   # timeout duration in minutes
 
