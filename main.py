@@ -14,6 +14,21 @@ SHEET_NAME = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
 
 # Load Google credentials from the JSON env var
 _service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+
+# Channel IDs to monitor for message logs
+MONITORED_CHANNEL_IDS = {
+    1484894338772107446,
+    1484894415477801050,
+    1485254833299787938,
+    1484895222943973416,
+    1484895286210855064,
+    1485051111751815429,
+    1488925835862737189,
+    1489738603860066385,
+}
+
+# Channel ID where message logs will be sent
+MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
 # ──────────────────────────────────────────────────────────
 
 SCOPES = [
@@ -29,8 +44,10 @@ kick_sheet    = gc.open(SHEET_NAME).worksheet("Kick Logs")
 ban_sheet     = gc.open(SHEET_NAME).worksheet("Ban Logs")
 action_sheet  = gc.open(SHEET_NAME).worksheet("Moderator Action Log")
 
-intents         = discord.Intents.default()
-intents.members = True
+intents                = discord.Intents.default()
+intents.members        = True
+intents.message_content = True
+intents.messages       = True
 
 bot  = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
@@ -65,6 +82,14 @@ def log_action(moderator, command: str, reason: str = "N/A"):
         ],
         range_name=f"B{next_row}:G{next_row}"
     )
+
+
+def format_timestamp(dt: datetime.datetime) -> str:
+    """Format a datetime object into a readable UK timestamp."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    uk_time = dt.astimezone(UK_TZ)
+    return uk_time.strftime("%d/%m/%Y at %H:%M:%S")
 
 
 # ─── Log Functions ────────────────────────────────────────
@@ -215,6 +240,169 @@ async def on_ready():
     await tree.sync()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Slash commands synced.")
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    """Fires when a message is deleted in a monitored channel."""
+    # Ignore bot messages and unmonitored channels
+    if message.author.bot:
+        return
+    if message.channel.id not in MONITORED_CHANNEL_IDS:
+        return
+
+    log_channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    now_uk       = datetime.datetime.now(UK_TZ)
+    sent_str     = format_timestamp(message.created_at)
+    deleted_str  = now_uk.strftime("%d/%m/%Y at %H:%M:%S")
+
+    # Try to find who deleted it via the audit log
+    deleted_by = "Unknown"
+    try:
+        async for entry in message.guild.audit_logs(
+            limit=5,
+            action=discord.AuditLogAction.message_delete
+        ):
+            # Match by target user and channel
+            if (
+                entry.target.id == message.author.id
+                and entry.extra.channel.id == message.channel.id
+            ):
+                deleted_by = f"{entry.user} (`{entry.user.id}`)"
+                break
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    content = message.content or "*[No text content — may have been an embed or attachment]*"
+    if len(content) > 1024:
+        content = content[:1021] + "..."
+
+    embed = discord.Embed(
+        title="🗑️ Message Deleted",
+        color=discord.Color.red(),
+        timestamp=datetime.datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Author",
+        value=f"{message.author.mention} — {message.author} (`{message.author.id}`)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Channel",
+        value=f"{message.channel.mention} (`{message.channel.id}`)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Deleted By",
+        value=deleted_by,
+        inline=False,
+    )
+    embed.add_field(
+        name="Message Content",
+        value=content,
+        inline=False,
+    )
+    embed.add_field(
+        name="Message Sent",
+        value=sent_str,
+        inline=True,
+    )
+    embed.add_field(
+        name="Deleted At",
+        value=deleted_str,
+        inline=True,
+    )
+
+    # Show attachments if any
+    if message.attachments:
+        attachment_links = "\n".join(a.proxy_url for a in message.attachments)
+        embed.add_field(
+            name=f"Attachments ({len(message.attachments)})",
+            value=attachment_links[:1024],
+            inline=False,
+        )
+
+    embed.set_thumbnail(url=message.author.display_avatar.url)
+    embed.set_footer(text=f"Message ID: {message.id}")
+
+    await log_channel.send(embed=embed)
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    """Fires when a message is edited in a monitored channel."""
+    # Ignore bot messages, unmonitored channels, and pin notifications
+    if before.author.bot:
+        return
+    if before.channel.id not in MONITORED_CHANNEL_IDS:
+        return
+    # Ignore edits where content didn't actually change (e.g. embed loading)
+    if before.content == after.content:
+        return
+
+    log_channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    sent_str   = format_timestamp(before.created_at)
+    edited_str = format_timestamp(after.edited_at or datetime.datetime.now(timezone.utc))
+
+    before_content = before.content or "*[No text content]*"
+    after_content  = after.content  or "*[No text content]*"
+
+    if len(before_content) > 1024:
+        before_content = before_content[:1021] + "..."
+    if len(after_content) > 1024:
+        after_content = after_content[:1021] + "..."
+
+    embed = discord.Embed(
+        title="✏️ Message Edited",
+        color=discord.Color.orange(),
+        timestamp=datetime.datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Author",
+        value=f"{before.author.mention} — {before.author} (`{before.author.id}`)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Channel",
+        value=f"{before.channel.mention} (`{before.channel.id}`)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Before",
+        value=before_content,
+        inline=False,
+    )
+    embed.add_field(
+        name="After",
+        value=after_content,
+        inline=False,
+    )
+    embed.add_field(
+        name="Message Sent",
+        value=sent_str,
+        inline=True,
+    )
+    embed.add_field(
+        name="Edited At",
+        value=edited_str,
+        inline=True,
+    )
+    embed.add_field(
+        name="Jump to Message",
+        value=f"[Click here]({after.jump_url})",
+        inline=False,
+    )
+
+    embed.set_thumbnail(url=before.author.display_avatar.url)
+    embed.set_footer(text=f"Message ID: {before.id}")
+
+    await log_channel.send(embed=embed)
 
 
 # ─── Commands ─────────────────────────────────────────────
