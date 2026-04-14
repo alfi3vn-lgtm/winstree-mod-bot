@@ -7,6 +7,7 @@ import datetime
 import pytz
 import os
 import json
+import collections
 
 # ─── Config ───────────────────────────────────────────────
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
@@ -29,6 +30,19 @@ MONITORED_CHANNEL_IDS = {
 
 # Channel ID where message logs will be sent
 MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
+
+# ─── Spam Detection Config ────────────────────────────────
+# A user qualifies for a spam timeout if they send more than
+# SPAM_MESSAGE_LIMIT messages within SPAM_WINDOW_SECONDS seconds
+# in any monitored channel.
+SPAM_MESSAGE_LIMIT   = 5    # messages
+SPAM_WINDOW_SECONDS  = 5    # seconds
+SPAM_TIMEOUT_MINUTES = 10   # timeout duration in minutes
+
+# Tracks recent message timestamps per user: {user_id: deque([datetime, ...])}
+_spam_tracker: dict[int, collections.deque] = {}
+# Tracks users currently being spam-timed-out to avoid double-triggering
+_spam_cooldown: set[int] = set()
 # ──────────────────────────────────────────────────────────
 
 SCOPES = [
@@ -44,10 +58,10 @@ kick_sheet    = gc.open(SHEET_NAME).worksheet("Kick Logs")
 ban_sheet     = gc.open(SHEET_NAME).worksheet("Ban Logs")
 action_sheet  = gc.open(SHEET_NAME).worksheet("Moderator Action Log")
 
-intents                = discord.Intents.default()
-intents.members        = True
+intents                 = discord.Intents.default()
+intents.members         = True
 intents.message_content = True
-intents.messages       = True
+intents.messages        = True
 
 bot  = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
@@ -233,6 +247,31 @@ def get_user_log(target_id: int) -> dict:
     return result
 
 
+# ─── Spam Detection ───────────────────────────────────────
+
+def is_spamming(user_id: int) -> bool:
+    """
+    Returns True if the user has sent more than SPAM_MESSAGE_LIMIT
+    messages within the last SPAM_WINDOW_SECONDS seconds.
+    """
+    now = datetime.datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
+
+    if user_id not in _spam_tracker:
+        _spam_tracker[user_id] = collections.deque()
+
+    dq = _spam_tracker[user_id]
+
+    # Record this message
+    dq.append(now)
+
+    # Purge old timestamps outside the window
+    while dq and dq[0] < cutoff:
+        dq.popleft()
+
+    return len(dq) > SPAM_MESSAGE_LIMIT
+
+
 # ─── Events ───────────────────────────────────────────────
 
 @bot.event
@@ -243,9 +282,66 @@ async def on_ready():
 
 
 @bot.event
+async def on_message(message: discord.Message):
+    """Detects spam in monitored channels and auto-times-out the offender."""
+    if message.author.bot:
+        return
+    if message.channel.id not in MONITORED_CHANNEL_IDS:
+        return
+
+    user_id = message.author.id
+
+    # Skip users already being processed for spam
+    if user_id in _spam_cooldown:
+        return
+
+    if is_spamming(user_id):
+        _spam_cooldown.add(user_id)
+        try:
+            member = message.guild.get_member(user_id)
+            if member is None:
+                return
+
+            delta  = timedelta(minutes=SPAM_TIMEOUT_MINUTES)
+            reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
+
+            await member.timeout(delta, reason=reason)
+
+            # Log to the Timeout Logs sheet
+            log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
+
+            # Log to the Moderator Action Log sheet
+            log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
+
+            # Post a notice in the channel where the spam happened
+            await message.channel.send(
+                f"🚨 {member.mention} has been timed out for **{SPAM_TIMEOUT_MINUTES} minutes** for spamming.",
+                delete_after=10,
+            )
+
+            # Try to DM the user
+            try:
+                await member.send(
+                    f"You have been timed out in **{message.guild.name}** for **{SPAM_TIMEOUT_MINUTES} minutes**.\n"
+                    f"Reason: {reason}"
+                )
+            except discord.Forbidden:
+                pass
+
+            # Clear their spam tracker so the window resets after the timeout
+            _spam_tracker.pop(user_id, None)
+
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+        finally:
+            _spam_cooldown.discard(user_id)
+
+
+@bot.event
 async def on_message_delete(message: discord.Message):
     """Fires when a message is deleted in a monitored channel."""
-    # Ignore bot messages and unmonitored channels
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
@@ -259,14 +355,12 @@ async def on_message_delete(message: discord.Message):
     sent_str     = format_timestamp(message.created_at)
     deleted_str  = now_uk.strftime("%d/%m/%Y at %H:%M:%S")
 
-    # Try to find who deleted it via the audit log
     deleted_by = "Unknown"
     try:
         async for entry in message.guild.audit_logs(
             limit=5,
             action=discord.AuditLogAction.message_delete
         ):
-            # Match by target user and channel
             if (
                 entry.target.id == message.author.id
                 and entry.extra.channel.id == message.channel.id
@@ -285,61 +379,29 @@ async def on_message_delete(message: discord.Message):
         color=discord.Color.red(),
         timestamp=datetime.datetime.now(timezone.utc),
     )
-    embed.add_field(
-        name="Author",
-        value=f"{message.author.mention} — {message.author} (`{message.author.id}`)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Channel",
-        value=f"{message.channel.mention} (`{message.channel.id}`)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Deleted By",
-        value=deleted_by,
-        inline=False,
-    )
-    embed.add_field(
-        name="Message Content",
-        value=content,
-        inline=False,
-    )
-    embed.add_field(
-        name="Message Sent",
-        value=sent_str,
-        inline=True,
-    )
-    embed.add_field(
-        name="Deleted At",
-        value=deleted_str,
-        inline=True,
-    )
+    embed.add_field(name="Author",          value=f"{message.author.mention} — {message.author} (`{message.author.id}`)", inline=False)
+    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)", inline=False)
+    embed.add_field(name="Deleted By",      value=deleted_by, inline=False)
+    embed.add_field(name="Message Content", value=content, inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
+    embed.add_field(name="Deleted At",      value=deleted_str, inline=True)
 
-    # Show attachments if any
     if message.attachments:
         attachment_links = "\n".join(a.proxy_url for a in message.attachments)
-        embed.add_field(
-            name=f"Attachments ({len(message.attachments)})",
-            value=attachment_links[:1024],
-            inline=False,
-        )
+        embed.add_field(name=f"Attachments ({len(message.attachments)})", value=attachment_links[:1024], inline=False)
 
     embed.set_thumbnail(url=message.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {message.id}")
-
     await log_channel.send(embed=embed)
 
 
 @bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
     """Fires when a message is edited in a monitored channel."""
-    # Ignore bot messages, unmonitored channels, and pin notifications
     if before.author.bot:
         return
     if before.channel.id not in MONITORED_CHANNEL_IDS:
         return
-    # Ignore edits where content didn't actually change (e.g. embed loading)
     if before.content == after.content:
         return
 
@@ -363,45 +425,16 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         color=discord.Color.orange(),
         timestamp=datetime.datetime.now(timezone.utc),
     )
-    embed.add_field(
-        name="Author",
-        value=f"{before.author.mention} — {before.author} (`{before.author.id}`)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Channel",
-        value=f"{before.channel.mention} (`{before.channel.id}`)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Before",
-        value=before_content,
-        inline=False,
-    )
-    embed.add_field(
-        name="After",
-        value=after_content,
-        inline=False,
-    )
-    embed.add_field(
-        name="Message Sent",
-        value=sent_str,
-        inline=True,
-    )
-    embed.add_field(
-        name="Edited At",
-        value=edited_str,
-        inline=True,
-    )
-    embed.add_field(
-        name="Jump to Message",
-        value=f"[Click here]({after.jump_url})",
-        inline=False,
-    )
+    embed.add_field(name="Author",          value=f"{before.author.mention} — {before.author} (`{before.author.id}`)", inline=False)
+    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
+    embed.add_field(name="Before",          value=before_content, inline=False)
+    embed.add_field(name="After",           value=after_content, inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
+    embed.add_field(name="Edited At",       value=edited_str, inline=True)
+    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})", inline=False)
 
     embed.set_thumbnail(url=before.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {before.id}")
-
     await log_channel.send(embed=embed)
 
 
