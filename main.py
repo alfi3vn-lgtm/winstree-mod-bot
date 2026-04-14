@@ -31,17 +31,15 @@ MONITORED_CHANNEL_IDS = {
 # Channel ID where message logs will be sent
 MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
 
-# ─── Spam Detection Config ────────────────────────────────
-# A user qualifies for a spam timeout if they send more than
-# SPAM_MESSAGE_LIMIT messages within SPAM_WINDOW_SECONDS seconds
-# in any monitored channel.
-SPAM_MESSAGE_LIMIT   = 4    # messages
-SPAM_WINDOW_SECONDS  = 5    # seconds
-SPAM_TIMEOUT_MINUTES = 10   # timeout duration in minutes
+# Channel ID where moderation action logs will be sent
+ACTION_LOG_CHANNEL_ID = 1493652621473349672
 
-# Tracks recent message timestamps per user: {user_id: deque([datetime, ...])}
+# ─── Spam Detection Config ────────────────────────────────
+SPAM_MESSAGE_LIMIT   = 5
+SPAM_WINDOW_SECONDS  = 5
+SPAM_TIMEOUT_MINUTES = 10
+
 _spam_tracker: dict[int, collections.deque] = {}
-# Tracks users currently being spam-timed-out to avoid double-triggering
 _spam_cooldown: set[int] = set()
 # ──────────────────────────────────────────────────────────
 
@@ -72,7 +70,7 @@ UK_TZ = pytz.timezone("Europe/London")
 # ─── Helpers ──────────────────────────────────────────────
 
 def get_next_row(worksheet):
-    all_values = worksheet.col_values(2)  # Column B
+    all_values = worksheet.col_values(2)
     return max(5, len(all_values) + 1)
 
 
@@ -98,8 +96,45 @@ def log_action(moderator, command: str, reason: str = "N/A"):
     )
 
 
+async def send_action_log(
+    moderator: discord.User | discord.Member,
+    command: str,
+    reason: str = "N/A",
+    target: discord.Member | None = None,
+    color: discord.Color = discord.Color.blurple(),
+    extra_fields: list[tuple[str, str]] | None = None,
+):
+    """Send a moderation action embed to the ACTION_LOG_CHANNEL_ID channel."""
+    log_channel = bot.get_channel(ACTION_LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    now_uk = datetime.datetime.now(UK_TZ)
+
+    embed = discord.Embed(
+        title="🛡️ Moderation Action",
+        color=color,
+        timestamp=datetime.datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Command",    value=f"`{command}`",                                                             inline=False)
+    embed.add_field(name="Moderator",  value=f"{moderator.mention} — {moderator} (`{moderator.id}`)",                   inline=False)
+    if target:
+        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",                            inline=False)
+    embed.add_field(name="Reason",     value=reason,                                                                     inline=False)
+    if extra_fields:
+        for name, value in extra_fields:
+            embed.add_field(name=name, value=value, inline=False)
+    embed.add_field(name="Time",       value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                                   inline=False)
+
+    if target:
+        embed.set_thumbnail(url=target.display_avatar.url)
+    else:
+        embed.set_thumbnail(url=moderator.display_avatar.url)
+
+    await log_channel.send(embed=embed)
+
+
 def format_timestamp(dt: datetime.datetime) -> str:
-    """Format a datetime object into a readable UK timestamp."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     uk_time = dt.astimezone(UK_TZ)
@@ -250,22 +285,15 @@ def get_user_log(target_id: int) -> dict:
 # ─── Spam Detection ───────────────────────────────────────
 
 def is_spamming(user_id: int) -> bool:
-    """
-    Returns True if the user has sent more than SPAM_MESSAGE_LIMIT
-    messages within the last SPAM_WINDOW_SECONDS seconds.
-    """
-    now = datetime.datetime.now(timezone.utc)
+    now    = datetime.datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
 
     if user_id not in _spam_tracker:
         _spam_tracker[user_id] = collections.deque()
 
     dq = _spam_tracker[user_id]
-
-    # Record this message
     dq.append(now)
 
-    # Purge old timestamps outside the window
     while dq and dq[0] < cutoff:
         dq.popleft()
 
@@ -291,7 +319,6 @@ async def on_message(message: discord.Message):
 
     user_id = message.author.id
 
-    # Skip users already being processed for spam
     if user_id in _spam_cooldown:
         return
 
@@ -307,19 +334,23 @@ async def on_message(message: discord.Message):
 
             await member.timeout(delta, reason=reason)
 
-            # Log to the Timeout Logs sheet
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
-
-            # Log to the Moderator Action Log sheet
             log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
 
-            # Post a notice in the channel where the spam happened
+            await send_action_log(
+                moderator=bot.user,
+                command=f"[AUTO-TIMEOUT] @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.red(),
+                extra_fields=[("Duration", f"{SPAM_TIMEOUT_MINUTES} Minutes")],
+            )
+
             await message.channel.send(
                 f"🚨 {member.mention} has been timed out for **{SPAM_TIMEOUT_MINUTES} minutes** for spamming.",
                 delete_after=10,
             )
 
-            # Try to DM the user
             try:
                 await member.send(
                     f"You have been timed out in **{message.guild.name}** for **{SPAM_TIMEOUT_MINUTES} minutes**.\n"
@@ -328,7 +359,6 @@ async def on_message(message: discord.Message):
             except discord.Forbidden:
                 pass
 
-            # Clear their spam tracker so the window resets after the timeout
             _spam_tracker.pop(user_id, None)
 
         except discord.Forbidden:
@@ -351,9 +381,9 @@ async def on_message_delete(message: discord.Message):
     if log_channel is None:
         return
 
-    now_uk       = datetime.datetime.now(UK_TZ)
-    sent_str     = format_timestamp(message.created_at)
-    deleted_str  = now_uk.strftime("%d/%m/%Y at %H:%M:%S")
+    now_uk      = datetime.datetime.now(UK_TZ)
+    sent_str    = format_timestamp(message.created_at)
+    deleted_str = now_uk.strftime("%d/%m/%Y at %H:%M:%S")
 
     deleted_by = "Unknown"
     try:
@@ -488,11 +518,33 @@ async def timeout_member(
             await member.kick(reason="Auto-kick: 5 timeouts in 1 week.")
             log_kick(interaction.user, member, "Auto-kick: 5 timeouts in 1 week.")
             log_action(interaction.user, f"/timeout @{member} [AUTO-KICK TRIGGERED]", "5 timeouts in 1 week")
+
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/timeout @{member} {duration} {unit.name}",
+                reason=reason,
+                target=member,
+                color=discord.Color.red(),
+                extra_fields=[
+                    ("Duration", f"{duration} {unit.name}"),
+                    ("⚠️ Auto-Kick Triggered", f"{member} has been kicked for receiving {timeout_count} timeouts in the last 7 days."),
+                ],
+            )
+
             await interaction.followup.send(
                 f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}\n\n"
                 f"⚠️ **{member}** has been **kicked** for receiving **{timeout_count} timeouts** in the last 7 days."
             )
         else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/timeout @{member} {duration} {unit.name}",
+                reason=reason,
+                target=member,
+                color=discord.Color.yellow(),
+                extra_fields=[("Duration", f"{duration} {unit.name}")],
+            )
+
             await interaction.followup.send(
                 f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}"
             )
@@ -522,6 +574,15 @@ async def remove_timeout(
 
     try:
         await member.timeout(None, reason=reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/untimeout @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.green(),
+        )
+
         await interaction.followup.send(f"Removed timeout from **{member}**.\nReason: {reason}")
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to modify that member.", ephemeral=True)
@@ -551,11 +612,35 @@ async def warn_member(
                 await member.timeout(timedelta(hours=1), reason="Reached 2 warnings.")
                 log_timeout(interaction.user, member, 1, "Hours", "Reached 2 warnings.")
                 log_action(interaction.user, f"/warn @{member} [AUTO-TIMEOUT TRIGGERED]", "Reached 2 warnings")
+
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.orange(),
+                    extra_fields=[
+                        ("Warn Count", str(warn_count)),
+                        ("⚠️ Auto-Timeout Triggered", f"{member} has been timed out for 1 hour for reaching 2 warnings."),
+                    ],
+                )
+
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
                     f"⚠️ **{member}** has reached **2 warnings** and has been timed out for **1 hour**."
                 )
             except discord.Forbidden:
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.orange(),
+                    extra_fields=[
+                        ("Warn Count", str(warn_count)),
+                        ("⚠️ Auto-Timeout Failed", "Missing permissions to timeout."),
+                    ],
+                )
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
                     f"⚠️ **{member}** has reached **2 warnings** but I don't have permission to time them out."
@@ -591,18 +676,53 @@ async def warn_member(
                 await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
                 log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
                 log_action(interaction.user, f"/warn @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.dark_red(),
+                    extra_fields=[
+                        ("Warn Count", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings."),
+                        ("⛔ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                    ],
+                )
+
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
                     f"⚠️ **{member}** has reached **3 warnings** and has been **kicked**.\n"
                     f"⛔ They have also been **banned** for receiving **{kick_count} kicks** in the last 30 days."
                 )
             else:
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.red(),
+                    extra_fields=[
+                        ("Warn Count", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings."),
+                    ],
+                )
+
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
                     f"⚠️ **{member}** has reached **3 warnings** and has been **kicked** from the server."
                 )
 
         else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/warn @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.yellow(),
+                extra_fields=[("Warn Count", str(warn_count))],
+            )
+
             await interaction.followup.send(
                 f"Warned **{member}**.\nReason: {reason}\n"
                 f"They now have **{warn_count}** warning(s)."
@@ -628,6 +748,16 @@ async def remove_warn(
 
         if removed:
             warn_count = get_warn_count(member.id)
+
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/removewarn @{member}",
+                reason="N/A",
+                target=member,
+                color=discord.Color.green(),
+                extra_fields=[("Remaining Warnings", str(warn_count))],
+            )
+
             await interaction.followup.send(
                 f"Removed the most recent warning from **{member}**.\n"
                 f"They now have **{warn_count}** warning(s)."
@@ -669,11 +799,31 @@ async def kick_member(
             await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
             log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
             log_action(interaction.user, f"/kick @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/kick @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.dark_red(),
+                extra_fields=[
+                    ("⚠️ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                ],
+            )
+
             await interaction.followup.send(
                 f"Kicked **{member}**.\nReason: {reason}\n\n"
                 f"⚠️ **{member}** has been **banned** for receiving **{kick_count} kicks** in the last 30 days."
             )
         else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/kick @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.red(),
+            )
+
             await interaction.followup.send(f"Kicked **{member}**.\nReason: {reason}")
 
     except discord.Forbidden:
@@ -698,6 +848,15 @@ async def ban_member(
     try:
         await member.ban(reason=reason)
         log_ban(interaction.user, member, reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/ban @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.dark_red(),
+        )
+
         await interaction.followup.send(f"Banned **{member}**.\nReason: {reason}")
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to ban that member.", ephemeral=True)
@@ -721,6 +880,15 @@ async def unban_member(
     try:
         user = await bot.fetch_user(int(user_id))
         await interaction.guild.unban(user, reason=reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/unban {user_id}",
+            reason=reason,
+            color=discord.Color.green(),
+            extra_fields=[("Unbanned User", f"{user} (`{user.id}`)")],
+        )
+
         await interaction.followup.send(f"Unbanned **{user}**.\nReason: {reason}")
     except ValueError:
         await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
@@ -742,6 +910,14 @@ async def view_logs(
 ):
     await interaction.response.defer(ephemeral=True)
     log_action(interaction.user, f"/viewlogs @{member}", "N/A")
+
+    await send_action_log(
+        moderator=interaction.user,
+        command=f"/viewlogs @{member}",
+        reason="N/A",
+        target=member,
+        color=discord.Color.blurple(),
+    )
 
     try:
         logs = get_user_log(member.id)
