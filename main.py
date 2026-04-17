@@ -41,6 +41,10 @@ SPAM_TIMEOUT_MINUTES = 10
 
 _spam_tracker: dict[int, collections.deque] = {}
 _spam_cooldown: set[int] = set()
+
+# Members who were kicked or banned get a fresh session on next join.
+# Voluntary leaves do NOT trigger a new session — warns carry over.
+_flagged_for_new_session: set[int] = set()
 # ──────────────────────────────────────────────────────────
 
 SCOPES = [
@@ -143,10 +147,11 @@ def format_timestamp(dt: datetime.datetime) -> str:
 
 
 # ─── Session Utilities ────────────────────────────────────
-# The "Join Sessions" sheet tracks each time a member joins.
-# Columns: B=UserID, C=SessionID, D=JoinDate
-# SessionID increments by 1 each time the user rejoins.
-# Warns are tied to a session so each rejoin gives a fresh 3-warn slate.
+# The "Join Sessions" sheet tracks each time a member gets a new session.
+# A new session is only created when a member is kicked or banned —
+# voluntary leaves carry the same session forward.
+# Columns: B=UserID, C=SessionID, D=Date
+# Warns are tied to a session so kicks/bans give a fresh 3-warn slate.
 
 def get_current_session_id(target_id: int) -> int:
     """Return the latest session ID for this user, or 1 if they have none."""
@@ -165,7 +170,8 @@ def get_current_session_id(target_id: int) -> int:
 
 def create_new_session(target_id: int) -> int:
     """
-    Create a new session entry for a user (called on_member_join).
+    Create a new session entry for a user.
+    Only called when a user rejoins after being kicked or banned.
     Returns the new session ID.
     """
     current = get_current_session_id(target_id)
@@ -426,11 +432,17 @@ async def on_ready():
 @bot.event
 async def on_member_join(member: discord.Member):
     """
-    Every time a member joins (or rejoins), create a new session.
-    This gives them a fresh warn slate while keeping old warns on record.
+    When a member rejoins, only create a new session if they were previously
+    kicked or banned. Voluntary leaves carry the same session forward so warns
+    are not wiped by simply leaving and rejoining.
     """
-    create_new_session(member.id)
-    print(f"[SESSION] New session created for {member} ({member.id})")
+    if member.id in _flagged_for_new_session:
+        _flagged_for_new_session.discard(member.id)
+        new_sid = create_new_session(member.id)
+        print(f"[SESSION] New session ({new_sid}) created for {member} ({member.id}) — rejoined after kick/ban.")
+    else:
+        current_sid = get_current_session_id(member.id)
+        print(f"[SESSION] {member} ({member.id}) rejoined voluntarily — keeping session {current_sid}, warns unchanged.")
 
 
 @bot.event
@@ -643,6 +655,9 @@ async def timeout_member(
             log_kick(interaction.user, member, "Auto-kick: 5 timeouts in 1 week.")
             log_action(interaction.user, f"/timeout @{member} [AUTO-KICK TRIGGERED]", "5 timeouts in 1 week")
 
+            # Flag for a fresh session when they rejoin
+            _flagged_for_new_session.add(member.id)
+
             await send_action_log(
                 moderator=interaction.user,
                 command=f"/timeout @{member} {duration} {unit.name}",
@@ -786,6 +801,9 @@ async def warn_member(
             log_kick(interaction.user, member, "Auto-kick: Received 3 warnings this session.")
             log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings this session")
 
+            # Flag for a fresh session when they rejoin
+            _flagged_for_new_session.add(member.id)
+
             kick_count = get_kick_count_this_month(member.id)
 
             if kick_count >= 3:
@@ -800,6 +818,9 @@ async def warn_member(
                 await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
                 log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
                 log_action(interaction.user, f"/warn @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+                # Ban supersedes kick flag — still flagged, flag remains
+                _flagged_for_new_session.add(member.id)
 
                 await send_action_log(
                     moderator=interaction.user,
@@ -909,6 +930,9 @@ async def kick_member(
         await member.kick(reason=reason)
         log_kick(interaction.user, member, reason)
 
+        # Flag for a fresh session when they rejoin
+        _flagged_for_new_session.add(member.id)
+
         kick_count = get_kick_count_this_month(member.id)
 
         if kick_count >= 3:
@@ -923,6 +947,9 @@ async def kick_member(
             await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
             log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
             log_action(interaction.user, f"/kick @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+            # Already flagged from kick above; flag remains for the ban too
+            _flagged_for_new_session.add(member.id)
 
             await send_action_log(
                 moderator=interaction.user,
@@ -972,6 +999,9 @@ async def ban_member(
     try:
         await member.ban(reason=reason)
         log_ban(interaction.user, member, reason)
+
+        # Flag for a fresh session when they are unbanned and rejoin
+        _flagged_for_new_session.add(member.id)
 
         await send_action_log(
             moderator=interaction.user,
@@ -1061,7 +1091,7 @@ async def view_logs(
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
             name="📋 Session Info",
-            value=f"Current session: **{current_session}** (warns reset each session/rejoin)",
+            value=f"Current session: **{current_session}** (warns reset on kick/ban, not on voluntary leave)",
             inline=False
         )
 
