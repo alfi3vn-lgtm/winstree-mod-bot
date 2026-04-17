@@ -55,6 +55,7 @@ warn_sheet    = gc.open(SHEET_NAME).worksheet("Warn Logs")
 kick_sheet    = gc.open(SHEET_NAME).worksheet("Kick Logs")
 ban_sheet     = gc.open(SHEET_NAME).worksheet("Ban Logs")
 action_sheet  = gc.open(SHEET_NAME).worksheet("Moderator Action Log")
+session_sheet = gc.open(SHEET_NAME).worksheet("Join Sessions")
 
 intents                 = discord.Intents.default()
 intents.members         = True
@@ -141,6 +142,66 @@ def format_timestamp(dt: datetime.datetime) -> str:
     return uk_time.strftime("%d/%m/%Y at %H:%M:%S")
 
 
+# ─── Session Utilities ────────────────────────────────────
+# The "Join Sessions" sheet tracks each time a member joins.
+# Columns: B=UserID, C=SessionID, D=JoinDate
+# SessionID increments by 1 each time the user rejoins.
+# Warns are tied to a session so each rejoin gives a fresh 3-warn slate.
+
+def get_current_session_id(target_id: int) -> int:
+    """Return the latest session ID for this user, or 1 if they have none."""
+    all_values = session_sheet.get_all_values()
+    latest = 0
+    for row in all_values[4:]:
+        if len(row) >= 3 and row[1] == str(target_id):
+            try:
+                sid = int(row[2])
+                if sid > latest:
+                    latest = sid
+            except ValueError:
+                pass
+    return latest if latest > 0 else 1
+
+
+def create_new_session(target_id: int) -> int:
+    """
+    Create a new session entry for a user (called on_member_join).
+    Returns the new session ID.
+    """
+    current = get_current_session_id(target_id)
+    new_sid  = current + 1
+    next_row = get_next_row(session_sheet)
+    date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+
+    session_sheet.update(
+        values=[[str(target_id), str(new_sid), date_str]],
+        range_name=f"B{next_row}:D{next_row}"
+    )
+    return new_sid
+
+
+def ensure_session_exists(target_id: int) -> int:
+    """
+    Ensure a user has at least one session on record.
+    Used the first time a user is warned so users who joined
+    before the session system was added still work correctly.
+    Returns the current session ID.
+    """
+    all_values = session_sheet.get_all_values()
+    for row in all_values[4:]:
+        if len(row) >= 2 and row[1] == str(target_id):
+            return get_current_session_id(target_id)
+
+    # No session found — create session 1
+    next_row = get_next_row(session_sheet)
+    date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    session_sheet.update(
+        values=[[str(target_id), "1", date_str]],
+        range_name=f"B{next_row}:D{next_row}"
+    )
+    return 1
+
+
 # ─── Log Functions ────────────────────────────────────────
 
 def log_timeout(moderator, target, duration, unit, reason):
@@ -157,14 +218,17 @@ def log_timeout(moderator, target, duration, unit, reason):
 
 
 def log_warn(moderator, target, reason):
-    next_row = get_next_row(warn_sheet)
-    date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    """Log a warning tied to the user's current session."""
+    next_row   = get_next_row(warn_sheet)
+    date_str   = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    session_id = ensure_session_exists(target.id)
 
+    # Columns: B=Username, C=UserID, D=Date, E=Reason, F=ModID, G=SessionID
     warn_sheet.update(
         values=[
-            [str(target), str(target.id), date_str, reason, str(moderator.id)]
+            [str(target), str(target.id), date_str, reason, str(moderator.id), str(session_id)]
         ],
-        range_name=f"B{next_row}:F{next_row}"
+        range_name=f"B{next_row}:G{next_row}"
     )
 
 
@@ -195,33 +259,78 @@ def log_ban(moderator, target, reason):
 # ─── Warn Utilities ───────────────────────────────────────
 
 def get_warn_count(target_id: int) -> int:
-    all_ids = warn_sheet.col_values(3)
-    return sum(1 for uid in all_ids[4:] if uid == str(target_id))
+    """Count warns for the user's CURRENT session only."""
+    session_id = get_current_session_id(target_id)
+    all_values = warn_sheet.get_all_values()
+    count = 0
+    for row in all_values[4:]:
+        # Column C (index 1) = UserID, Column G (index 5) = SessionID
+        if len(row) >= 6 and row[2] == str(target_id):
+            try:
+                if int(row[6]) == session_id:
+                    count += 1
+            except (ValueError, IndexError):
+                pass
+    return count
 
 
 def get_warn_reasons(target_id: int) -> list[str]:
-    rows = warn_sheet.get_all_values()
-    reasons = []
+    """Get warn reasons for the user's CURRENT session only."""
+    session_id = get_current_session_id(target_id)
+    rows       = warn_sheet.get_all_values()
+    reasons    = []
     for row in rows[4:]:
-        if len(row) >= 5 and row[2] == str(target_id):
-            reasons.append(row[3])
+        if len(row) >= 6 and row[2] == str(target_id):
+            try:
+                if int(row[6]) == session_id:
+                    reasons.append(row[3])
+            except (ValueError, IndexError):
+                pass
     return reasons
 
 
 def remove_latest_warn(target_id: int) -> bool:
-    all_ids  = warn_sheet.col_values(3)
-    last_row = None
+    """Remove the most recent warn for the user's CURRENT session."""
+    session_id = get_current_session_id(target_id)
+    all_values = warn_sheet.get_all_values()
+    last_row   = None
 
-    for i in range(len(all_ids) - 1, 3, -1):
-        if all_ids[i] == str(target_id):
-            last_row = i + 1
-            break
+    for i in range(len(all_values) - 1, 3, -1):
+        row = all_values[i]
+        if len(row) >= 6 and row[2] == str(target_id):
+            try:
+                if int(row[6]) == session_id:
+                    last_row = i + 1
+                    break
+            except (ValueError, IndexError):
+                pass
 
     if last_row is None:
         return False
 
     warn_sheet.delete_rows(last_row)
     return True
+
+
+def get_all_warn_count(target_id: int) -> int:
+    """Count ALL warns across all sessions (for viewlogs)."""
+    all_ids = warn_sheet.col_values(3)
+    return sum(1 for uid in all_ids[4:] if uid == str(target_id))
+
+
+def get_all_warn_reasons(target_id: int) -> list[dict]:
+    """Get all warns across all sessions with session info (for viewlogs)."""
+    rows    = warn_sheet.get_all_values()
+    results = []
+    for row in rows[4:]:
+        if len(row) >= 6 and row[2] == str(target_id):
+            results.append({
+                "date":       row[3],
+                "reason":     row[3],
+                "mod":        row[4] if len(row) > 4 else "N/A",
+                "session_id": row[5] if len(row) > 5 else "?",
+            })
+    return results
 
 
 # ─── Timeout Utilities ────────────────────────────────────
@@ -265,7 +374,12 @@ def get_user_log(target_id: int) -> dict:
 
     for row in warn_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["warns"].append({"date": row[3], "reason": row[3], "mod": row[5] if len(row) > 5 else "N/A"})
+            result["warns"].append({
+                "date":       row[3],
+                "reason":     row[3],
+                "mod":        row[4] if len(row) > 4 else "N/A",
+                "session_id": row[5] if len(row) > 5 else "?",
+            })
 
     for row in timeout_sheet.get_all_values()[4:]:
         if len(row) >= 6 and row[2] == str(target_id):
@@ -307,6 +421,16 @@ async def on_ready():
     await tree.sync()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Slash commands synced.")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """
+    Every time a member joins (or rejoins), create a new session.
+    This gives them a fresh warn slate while keeping old warns on record.
+    """
+    create_new_session(member.id)
+    print(f"[SESSION] New session created for {member} ({member.id})")
 
 
 @bot.event
@@ -605,7 +729,7 @@ async def warn_member(
 
     try:
         log_warn(interaction.user, member, reason)
-        warn_count = get_warn_count(member.id)
+        warn_count = get_warn_count(member.id)  # Only counts current session warns
 
         if warn_count == 2:
             try:
@@ -620,14 +744,14 @@ async def warn_member(
                     target=member,
                     color=discord.Color.orange(),
                     extra_fields=[
-                        ("Warn Count", str(warn_count)),
+                        ("Warn Count (This Session)", str(warn_count)),
                         ("⚠️ Auto-Timeout Triggered", f"{member} has been timed out for 1 hour for reaching 2 warnings."),
                     ],
                 )
 
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **2 warnings** and has been timed out for **1 hour**."
+                    f"⚠️ **{member}** has reached **2 warnings** this session and has been timed out for **1 hour**."
                 )
             except discord.Forbidden:
                 await send_action_log(
@@ -637,7 +761,7 @@ async def warn_member(
                     target=member,
                     color=discord.Color.orange(),
                     extra_fields=[
-                        ("Warn Count", str(warn_count)),
+                        ("Warn Count (This Session)", str(warn_count)),
                         ("⚠️ Auto-Timeout Failed", "Missing permissions to timeout."),
                     ],
                 )
@@ -652,15 +776,15 @@ async def warn_member(
 
             try:
                 await member.send(
-                    f"You have been **kicked** from the server for receiving **3 warnings**.\n\n"
-                    f"**Your warnings:**\n{reasons_text}"
+                    f"You have been **kicked** from the server for receiving **3 warnings** this session.\n\n"
+                    f"**Your warnings this session:**\n{reasons_text}"
                 )
             except discord.Forbidden:
                 pass
 
-            await member.kick(reason="Auto-kick: Received 3 warnings.")
-            log_kick(interaction.user, member, "Auto-kick: Received 3 warnings.")
-            log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings")
+            await member.kick(reason="Auto-kick: Received 3 warnings this session.")
+            log_kick(interaction.user, member, "Auto-kick: Received 3 warnings this session.")
+            log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings this session")
 
             kick_count = get_kick_count_this_month(member.id)
 
@@ -684,15 +808,15 @@ async def warn_member(
                     target=member,
                     color=discord.Color.dark_red(),
                     extra_fields=[
-                        ("Warn Count", str(warn_count)),
-                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings."),
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
                         ("⛔ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
                     ],
                 )
 
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **3 warnings** and has been **kicked**.\n"
+                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked**.\n"
                     f"⛔ They have also been **banned** for receiving **{kick_count} kicks** in the last 30 days."
                 )
             else:
@@ -703,14 +827,14 @@ async def warn_member(
                     target=member,
                     color=discord.Color.red(),
                     extra_fields=[
-                        ("Warn Count", str(warn_count)),
-                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings."),
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
                     ],
                 )
 
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **3 warnings** and has been **kicked** from the server."
+                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked** from the server."
                 )
 
         else:
@@ -720,12 +844,12 @@ async def warn_member(
                 reason=reason,
                 target=member,
                 color=discord.Color.yellow(),
-                extra_fields=[("Warn Count", str(warn_count))],
+                extra_fields=[("Warn Count (This Session)", str(warn_count))],
             )
 
             await interaction.followup.send(
                 f"Warned **{member}**.\nReason: {reason}\n"
-                f"They now have **{warn_count}** warning(s)."
+                f"They now have **{warn_count}** warning(s) this session."
             )
 
     except Exception as e:
@@ -755,15 +879,15 @@ async def remove_warn(
                 reason="N/A",
                 target=member,
                 color=discord.Color.green(),
-                extra_fields=[("Remaining Warnings", str(warn_count))],
+                extra_fields=[("Remaining Warnings (This Session)", str(warn_count))],
             )
 
             await interaction.followup.send(
                 f"Removed the most recent warning from **{member}**.\n"
-                f"They now have **{warn_count}** warning(s)."
+                f"They now have **{warn_count}** warning(s) this session."
             )
         else:
-            await interaction.followup.send(f"**{member}** has no warnings on record.", ephemeral=True)
+            await interaction.followup.send(f"**{member}** has no warnings on record for their current session.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Failed to remove warning: {e}", ephemeral=True)
 
@@ -927,34 +1051,45 @@ async def view_logs(
         kicks    = logs["kicks"]
         bans     = logs["bans"]
 
+        current_session = get_current_session_id(member.id)
+
         embed = discord.Embed(
             title=f"Moderation Log — {member}",
             color=discord.Color.orange(),
             timestamp=datetime.datetime.now(timezone.utc)
         )
         embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(
+            name="📋 Session Info",
+            value=f"Current session: **{current_session}** (warns reset each session/rejoin)",
+            inline=False
+        )
 
         if warns:
-            warn_lines = "\n".join(f"`{i+1}.` {w['date']} — {w['reason']}" for i, w in enumerate(warns))
-            embed.add_field(name=f"⚠️ Warnings ({len(warns)})", value=warn_lines, inline=False)
+            # Show session number alongside each warn
+            warn_lines = "\n".join(
+                f"`{i+1}.` {w['date']} — {w['reason']} *(Session {w.get('session_id', '?')})*"
+                for i, w in enumerate(warns)
+            )
+            embed.add_field(name=f"⚠️ Warnings ({len(warns)} all-time)", value=warn_lines[:1024], inline=False)
         else:
             embed.add_field(name="⚠️ Warnings (0)", value="None on record.", inline=False)
 
         if timeouts:
             timeout_lines = "\n".join(f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})" for i, t in enumerate(timeouts))
-            embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines, inline=False)
+            embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines[:1024], inline=False)
         else:
             embed.add_field(name="⏱️ Timeouts (0)", value="None on record.", inline=False)
 
         if kicks:
             kick_lines = "\n".join(f"`{i+1}.` {k['date']} — {k['reason']}" for i, k in enumerate(kicks))
-            embed.add_field(name=f"👢 Kicks ({len(kicks)})", value=kick_lines, inline=False)
+            embed.add_field(name=f"👢 Kicks ({len(kicks)})", value=kick_lines[:1024], inline=False)
         else:
             embed.add_field(name="👢 Kicks (0)", value="None on record.", inline=False)
 
         if bans:
             ban_lines = "\n".join(f"`{i+1}.` {b['date']} — {b['reason']}" for i, b in enumerate(bans))
-            embed.add_field(name=f"⛔ Bans ({len(bans)})", value=ban_lines, inline=False)
+            embed.add_field(name=f"⛔ Bans ({len(bans)})", value=ban_lines[:1024], inline=False)
         else:
             embed.add_field(name="⛔ Bans (0)", value="None on record.", inline=False)
 
