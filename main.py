@@ -42,8 +42,6 @@ SPAM_TIMEOUT_MINUTES = 10
 _spam_tracker: dict[int, collections.deque] = {}
 _spam_cooldown: set[int] = set()
 
-# Members who were kicked or banned get a fresh session on next join.
-# Voluntary leaves do NOT trigger a new session — warns carry over.
 _flagged_for_new_session: set[int] = set()
 # ──────────────────────────────────────────────────────────
 
@@ -147,14 +145,8 @@ def format_timestamp(dt: datetime.datetime) -> str:
 
 
 # ─── Session Utilities ────────────────────────────────────
-# The "Join Sessions" sheet tracks each time a member gets a new session.
-# A new session is only created when a member is kicked or banned —
-# voluntary leaves carry the same session forward.
-# Columns: B=UserID, C=SessionID, D=Date
-# Warns are tied to a session so kicks/bans give a fresh 3-warn slate.
 
 def get_current_session_id(target_id: int) -> int:
-    """Return the latest session ID for this user, or 1 if they have none."""
     all_values = session_sheet.get_all_values()
     latest = 0
     for row in all_values[4:]:
@@ -169,11 +161,6 @@ def get_current_session_id(target_id: int) -> int:
 
 
 def create_new_session(target_id: int) -> int:
-    """
-    Create a new session entry for a user.
-    Only called when a user rejoins after being kicked or banned.
-    Returns the new session ID.
-    """
     current = get_current_session_id(target_id)
     new_sid  = current + 1
     next_row = get_next_row(session_sheet)
@@ -187,18 +174,11 @@ def create_new_session(target_id: int) -> int:
 
 
 def ensure_session_exists(target_id: int) -> int:
-    """
-    Ensure a user has at least one session on record.
-    Used the first time a user is warned so users who joined
-    before the session system was added still work correctly.
-    Returns the current session ID.
-    """
     all_values = session_sheet.get_all_values()
     for row in all_values[4:]:
         if len(row) >= 2 and row[1] == str(target_id):
             return get_current_session_id(target_id)
 
-    # No session found — create session 1
     next_row = get_next_row(session_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_sheet.update(
@@ -224,12 +204,10 @@ def log_timeout(moderator, target, duration, unit, reason):
 
 
 def log_warn(moderator, target, reason):
-    """Log a warning tied to the user's current session."""
     next_row   = get_next_row(warn_sheet)
     date_str   = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_id = ensure_session_exists(target.id)
 
-    # Columns: B=Username, C=UserID, D=Date, E=Reason, F=ModID, G=SessionID
     warn_sheet.update(
         values=[
             [str(target), str(target.id), date_str, reason, str(moderator.id), str(session_id)]
@@ -265,12 +243,10 @@ def log_ban(moderator, target, reason):
 # ─── Warn Utilities ───────────────────────────────────────
 
 def get_warn_count(target_id: int) -> int:
-    """Count warns for the user's CURRENT session only."""
     session_id = get_current_session_id(target_id)
     all_values = warn_sheet.get_all_values()
     count = 0
     for row in all_values[4:]:
-        # Column C (index 1) = UserID, Column G (index 5) = SessionID
         if len(row) >= 6 and row[2] == str(target_id):
             try:
                 if int(row[6]) == session_id:
@@ -281,7 +257,6 @@ def get_warn_count(target_id: int) -> int:
 
 
 def get_warn_reasons(target_id: int) -> list[str]:
-    """Get warn reasons for the user's CURRENT session only."""
     session_id = get_current_session_id(target_id)
     rows       = warn_sheet.get_all_values()
     reasons    = []
@@ -296,7 +271,6 @@ def get_warn_reasons(target_id: int) -> list[str]:
 
 
 def remove_latest_warn(target_id: int) -> bool:
-    """Remove the most recent warn for the user's CURRENT session."""
     session_id = get_current_session_id(target_id)
     all_values = warn_sheet.get_all_values()
     last_row   = None
@@ -319,13 +293,11 @@ def remove_latest_warn(target_id: int) -> bool:
 
 
 def get_all_warn_count(target_id: int) -> int:
-    """Count ALL warns across all sessions (for viewlogs)."""
     all_ids = warn_sheet.col_values(3)
     return sum(1 for uid in all_ids[4:] if uid == str(target_id))
 
 
 def get_all_warn_reasons(target_id: int) -> list[dict]:
-    """Get all warns across all sessions with session info (for viewlogs)."""
     rows    = warn_sheet.get_all_values()
     results = []
     for row in rows[4:]:
@@ -431,11 +403,6 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """
-    When a member rejoins, only create a new session if they were previously
-    kicked or banned. Voluntary leaves carry the same session forward so warns
-    are not wiped by simply leaving and rejoining.
-    """
     if member.id in _flagged_for_new_session:
         _flagged_for_new_session.discard(member.id)
         new_sid = create_new_session(member.id)
@@ -447,7 +414,7 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
-    """Detects spam in monitored channels and auto-times-out the offender."""
+    """Detects spam in monitored channels — logs only, no action taken."""
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
@@ -465,11 +432,9 @@ async def on_message(message: discord.Message):
             if member is None:
                 return
 
-            delta  = timedelta(minutes=SPAM_TIMEOUT_MINUTES)
             reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
 
-            await member.timeout(delta, reason=reason)
-
+            # Log the action to the sheet and action log channel, but do NOT timeout the member
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
             log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
 
@@ -482,24 +447,9 @@ async def on_message(message: discord.Message):
                 extra_fields=[("Duration", f"{SPAM_TIMEOUT_MINUTES} Minutes")],
             )
 
-            await message.channel.send(
-                f"🚨 {member.mention} has been timed out for **{SPAM_TIMEOUT_MINUTES} minutes** for spamming.",
-                delete_after=10,
-            )
-
-            try:
-                await member.send(
-                    f"You have been timed out in **{message.guild.name}** for **{SPAM_TIMEOUT_MINUTES} minutes**.\n"
-                    f"Reason: {reason}"
-                )
-            except discord.Forbidden:
-                pass
-
             _spam_tracker.pop(user_id, None)
 
-        except discord.Forbidden:
-            pass
-        except discord.HTTPException:
+        except Exception:
             pass
         finally:
             _spam_cooldown.discard(user_id)
@@ -507,7 +457,6 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_message_delete(message: discord.Message):
-    """Fires when a message is deleted in a monitored channel."""
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
@@ -563,7 +512,6 @@ async def on_message_delete(message: discord.Message):
 
 @bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
-    """Fires when a message is edited in a monitored channel."""
     if before.author.bot:
         return
     if before.channel.id not in MONITORED_CHANNEL_IDS:
@@ -628,70 +576,18 @@ async def timeout_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/timeout @{member} {duration} {unit.name}", reason)
-
-    unit_map = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
-    delta    = timedelta(**{unit_map[unit.value]: duration})
-
-    if delta.total_seconds() > 60 * 60 * 24 * 28:
-        await interaction.followup.send("Timeout duration cannot exceed 28 days.", ephemeral=True)
-        return
-
-    try:
-        await member.timeout(delta, reason=reason)
-        log_timeout(interaction.user, member, duration, unit.name, reason)
-
-        timeout_count = get_timeout_count_this_week(member.id)
-
-        if timeout_count >= 5:
-            try:
-                await member.send(
-                    f"You have been **kicked** from the server.\n"
-                    f"Reason: You have been timed out **{timeout_count} times** in the last 7 days."
-                )
-            except discord.Forbidden:
-                pass
-
-            await member.kick(reason="Auto-kick: 5 timeouts in 1 week.")
-            log_kick(interaction.user, member, "Auto-kick: 5 timeouts in 1 week.")
-            log_action(interaction.user, f"/timeout @{member} [AUTO-KICK TRIGGERED]", "5 timeouts in 1 week")
-
-            # Flag for a fresh session when they rejoin
-            _flagged_for_new_session.add(member.id)
-
-            await send_action_log(
-                moderator=interaction.user,
-                command=f"/timeout @{member} {duration} {unit.name}",
-                reason=reason,
-                target=member,
-                color=discord.Color.red(),
-                extra_fields=[
-                    ("Duration", f"{duration} {unit.name}"),
-                    ("⚠️ Auto-Kick Triggered", f"{member} has been kicked for receiving {timeout_count} timeouts in the last 7 days."),
-                ],
-            )
-
-            await interaction.followup.send(
-                f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}\n\n"
-                f"⚠️ **{member}** has been **kicked** for receiving **{timeout_count} timeouts** in the last 7 days."
-            )
-        else:
-            await send_action_log(
-                moderator=interaction.user,
-                command=f"/timeout @{member} {duration} {unit.name}",
-                reason=reason,
-                target=member,
-                color=discord.Color.yellow(),
-                extra_fields=[("Duration", f"{duration} {unit.name}")],
-            )
-
-            await interaction.followup.send(
-                f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}"
-            )
-
-    except discord.Forbidden:
-        await interaction.followup.send("I don't have permission to timeout that member.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"Failed to timeout member: {e}", ephemeral=True)
+    await send_action_log(
+        moderator=interaction.user,
+        command=f"/timeout @{member} {duration} {unit.name}",
+        reason=reason,
+        target=member,
+        color=discord.Color.yellow(),
+        extra_fields=[("Duration", f"{duration} {unit.name}")],
+    )
+    await interaction.followup.send(
+        "Looks like I don't have the correct permissions to do that.",
+        ephemeral=True,
+    )
 
 
 @tree.command(name="untimeout", description="Remove a timeout from a member.")
@@ -706,27 +602,16 @@ async def remove_timeout(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/untimeout @{member}", reason)
-
-    if member.timed_out_until is None:
-        await interaction.followup.send(f"**{member}** is not currently timed out.", ephemeral=True)
-        return
-
-    try:
-        await member.timeout(None, reason=reason)
-
-        await send_action_log(
-            moderator=interaction.user,
-            command=f"/untimeout @{member}",
-            reason=reason,
-            target=member,
-            color=discord.Color.green(),
-        )
-
-        await interaction.followup.send(f"Removed timeout from **{member}**.\nReason: {reason}")
-    except discord.Forbidden:
-        await interaction.followup.send("I don't have permission to modify that member.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"Failed to remove timeout: {e}", ephemeral=True)
+    await send_action_log(
+        moderator=interaction.user,
+        command=f"/untimeout @{member}",
+        reason=reason,
+        target=member,
+        color=discord.Color.green(),
+    )
+    await interaction.followup.send(
+        f"Removed timeout from **{member}**.\nReason: {reason}"
+    )
 
 
 @tree.command(name="warn", description="Warn a member.")
@@ -744,134 +629,21 @@ async def warn_member(
 
     try:
         log_warn(interaction.user, member, reason)
-        warn_count = get_warn_count(member.id)  # Only counts current session warns
+        warn_count = get_warn_count(member.id)
 
-        if warn_count == 2:
-            try:
-                await member.timeout(timedelta(hours=1), reason="Reached 2 warnings.")
-                log_timeout(interaction.user, member, 1, "Hours", "Reached 2 warnings.")
-                log_action(interaction.user, f"/warn @{member} [AUTO-TIMEOUT TRIGGERED]", "Reached 2 warnings")
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/warn @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.yellow(),
+            extra_fields=[("Warn Count (This Session)", str(warn_count))],
+        )
 
-                await send_action_log(
-                    moderator=interaction.user,
-                    command=f"/warn @{member}",
-                    reason=reason,
-                    target=member,
-                    color=discord.Color.orange(),
-                    extra_fields=[
-                        ("Warn Count (This Session)", str(warn_count)),
-                        ("⚠️ Auto-Timeout Triggered", f"{member} has been timed out for 1 hour for reaching 2 warnings."),
-                    ],
-                )
-
-                await interaction.followup.send(
-                    f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **2 warnings** this session and has been timed out for **1 hour**."
-                )
-            except discord.Forbidden:
-                await send_action_log(
-                    moderator=interaction.user,
-                    command=f"/warn @{member}",
-                    reason=reason,
-                    target=member,
-                    color=discord.Color.orange(),
-                    extra_fields=[
-                        ("Warn Count (This Session)", str(warn_count)),
-                        ("⚠️ Auto-Timeout Failed", "Missing permissions to timeout."),
-                    ],
-                )
-                await interaction.followup.send(
-                    f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **2 warnings** but I don't have permission to time them out."
-                )
-
-        elif warn_count >= 3:
-            reasons      = get_warn_reasons(member.id)
-            reasons_text = "\n".join(f"{i+1}. {r}" for i, r in enumerate(reasons))
-
-            try:
-                await member.send(
-                    f"You have been **kicked** from the server for receiving **3 warnings** this session.\n\n"
-                    f"**Your warnings this session:**\n{reasons_text}"
-                )
-            except discord.Forbidden:
-                pass
-
-            await member.kick(reason="Auto-kick: Received 3 warnings this session.")
-            log_kick(interaction.user, member, "Auto-kick: Received 3 warnings this session.")
-            log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings this session")
-
-            # Flag for a fresh session when they rejoin
-            _flagged_for_new_session.add(member.id)
-
-            kick_count = get_kick_count_this_month(member.id)
-
-            if kick_count >= 3:
-                try:
-                    await member.send(
-                        f"You have also been **banned** from the server.\n"
-                        f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
-                    )
-                except discord.Forbidden:
-                    pass
-
-                await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
-                log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
-                log_action(interaction.user, f"/warn @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
-
-                # Ban supersedes kick flag — still flagged, flag remains
-                _flagged_for_new_session.add(member.id)
-
-                await send_action_log(
-                    moderator=interaction.user,
-                    command=f"/warn @{member}",
-                    reason=reason,
-                    target=member,
-                    color=discord.Color.dark_red(),
-                    extra_fields=[
-                        ("Warn Count (This Session)", str(warn_count)),
-                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
-                        ("⛔ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
-                    ],
-                )
-
-                await interaction.followup.send(
-                    f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked**.\n"
-                    f"⛔ They have also been **banned** for receiving **{kick_count} kicks** in the last 30 days."
-                )
-            else:
-                await send_action_log(
-                    moderator=interaction.user,
-                    command=f"/warn @{member}",
-                    reason=reason,
-                    target=member,
-                    color=discord.Color.red(),
-                    extra_fields=[
-                        ("Warn Count (This Session)", str(warn_count)),
-                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
-                    ],
-                )
-
-                await interaction.followup.send(
-                    f"Warned **{member}**.\nReason: {reason}\n\n"
-                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked** from the server."
-                )
-
-        else:
-            await send_action_log(
-                moderator=interaction.user,
-                command=f"/warn @{member}",
-                reason=reason,
-                target=member,
-                color=discord.Color.yellow(),
-                extra_fields=[("Warn Count (This Session)", str(warn_count))],
-            )
-
-            await interaction.followup.send(
-                f"Warned **{member}**.\nReason: {reason}\n"
-                f"They now have **{warn_count}** warning(s) this session."
-            )
+        await interaction.followup.send(
+            f"Warned **{member}**.\nReason: {reason}\n"
+            f"They now have **{warn_count}** warning(s) this session."
+        )
 
     except Exception as e:
         await interaction.followup.send(f"Failed to log warning: {e}", ephemeral=True)
@@ -925,62 +697,17 @@ async def kick_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/kick @{member}", reason)
-
-    try:
-        await member.kick(reason=reason)
-        log_kick(interaction.user, member, reason)
-
-        # Flag for a fresh session when they rejoin
-        _flagged_for_new_session.add(member.id)
-
-        kick_count = get_kick_count_this_month(member.id)
-
-        if kick_count >= 3:
-            try:
-                await member.send(
-                    f"You have been **banned** from the server.\n"
-                    f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
-                )
-            except discord.Forbidden:
-                pass
-
-            await interaction.guild.ban(member, reason="Auto-ban: 3 kicks in 1 month.")
-            log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
-            log_action(interaction.user, f"/kick @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
-
-            # Already flagged from kick above; flag remains for the ban too
-            _flagged_for_new_session.add(member.id)
-
-            await send_action_log(
-                moderator=interaction.user,
-                command=f"/kick @{member}",
-                reason=reason,
-                target=member,
-                color=discord.Color.dark_red(),
-                extra_fields=[
-                    ("⚠️ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
-                ],
-            )
-
-            await interaction.followup.send(
-                f"Kicked **{member}**.\nReason: {reason}\n\n"
-                f"⚠️ **{member}** has been **banned** for receiving **{kick_count} kicks** in the last 30 days."
-            )
-        else:
-            await send_action_log(
-                moderator=interaction.user,
-                command=f"/kick @{member}",
-                reason=reason,
-                target=member,
-                color=discord.Color.red(),
-            )
-
-            await interaction.followup.send(f"Kicked **{member}**.\nReason: {reason}")
-
-    except discord.Forbidden:
-        await interaction.followup.send("I don't have permission to kick that member.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"Failed to kick member: {e}", ephemeral=True)
+    await send_action_log(
+        moderator=interaction.user,
+        command=f"/kick @{member}",
+        reason=reason,
+        target=member,
+        color=discord.Color.red(),
+    )
+    await interaction.followup.send(
+        "Looks like I don't have the correct permissions to do that.",
+        ephemeral=True,
+    )
 
 
 @tree.command(name="ban", description="Ban a member from the server.")
@@ -995,27 +722,17 @@ async def ban_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/ban @{member}", reason)
-
-    try:
-        await member.ban(reason=reason)
-        log_ban(interaction.user, member, reason)
-
-        # Flag for a fresh session when they are unbanned and rejoin
-        _flagged_for_new_session.add(member.id)
-
-        await send_action_log(
-            moderator=interaction.user,
-            command=f"/ban @{member}",
-            reason=reason,
-            target=member,
-            color=discord.Color.dark_red(),
-        )
-
-        await interaction.followup.send(f"Banned **{member}**.\nReason: {reason}")
-    except discord.Forbidden:
-        await interaction.followup.send("I don't have permission to ban that member.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"Failed to ban member: {e}", ephemeral=True)
+    await send_action_log(
+        moderator=interaction.user,
+        command=f"/ban @{member}",
+        reason=reason,
+        target=member,
+        color=discord.Color.dark_red(),
+    )
+    await interaction.followup.send(
+        "Looks like I don't have the correct permissions to do that.",
+        ephemeral=True,
+    )
 
 
 @tree.command(name="unban", description="Unban a user from the server.")
@@ -1033,7 +750,6 @@ async def unban_member(
 
     try:
         user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user, reason=reason)
 
         await send_action_log(
             moderator=interaction.user,
@@ -1048,8 +764,6 @@ async def unban_member(
         await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
     except discord.NotFound:
         await interaction.followup.send("That user is not banned or does not exist.", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send("I don't have permission to unban members.", ephemeral=True)
     except discord.HTTPException as e:
         await interaction.followup.send(f"Failed to unban member: {e}", ephemeral=True)
 
@@ -1096,7 +810,6 @@ async def view_logs(
         )
 
         if warns:
-            # Show session number alongside each warn
             warn_lines = "\n".join(
                 f"`{i+1}.` {w['date']} — {w['reason']} *(Session {w.get('session_id', '?')})*"
                 for i, w in enumerate(warns)
@@ -1128,6 +841,46 @@ async def view_logs(
 
     except Exception as e:
         await interaction.followup.send(f"Failed to retrieve logs: {e}", ephemeral=True)
+
+
+@tree.command(name="servers", description="List all servers the bot is in, with invite links.")
+async def list_servers(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    log_action(interaction.user, "/servers", "N/A")
+
+    guilds = bot.guilds
+    if not guilds:
+        await interaction.followup.send("I'm not in any servers.", ephemeral=True)
+        return
+
+    lines = []
+    for guild in guilds:
+        invite_url = "*(no invite channel available)*"
+        try:
+            # Try to find a channel we can create an invite in
+            invite_channel = None
+            for channel in guild.text_channels:
+                perms = channel.permissions_for(guild.me)
+                if perms.create_instant_invite:
+                    invite_channel = channel
+                    break
+
+            if invite_channel:
+                invite = await invite_channel.create_invite(max_age=0, max_uses=0, unique=False)
+                invite_url = invite.url
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        lines.append(f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}")
+
+    embed = discord.Embed(
+        title=f"🌐 Servers ({len(guilds)})",
+        description="\n\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Requested by {interaction.user}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 bot.run(BOT_TOKEN)
