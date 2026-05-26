@@ -31,49 +31,12 @@ MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
 ACTION_LOG_CHANNEL_ID  = 1493652621473349672
 
 # ─── Target guild and channels to create ──────────────────
-TARGET_GUILD_ID = 1500911957941948610
+TARGET_GUILD_ID = 1508899108046246000
 
 CHANNELS_TO_CREATE = [
-	"qerz",
-	"lumo",
-	"vexi",
-	"tarn",
-	"bryl",
-	"xopa",
-	"nemi",
-	"zulk",
-	"firo",
-	"dwen",
-	"cavi",
-	"jort",
-	"phex",
-	"womi",
-	"gral",
-	"yent",
-	"skov",
-	"trix",
-	"melo",
-	"quib",
-	"ravo",
-	"zemi",
-	"plor",
-	"hask",
-	"vurn",
-	"clyo",
-	"bent",
-	"javi",
-	"nork",
-	"flep",
-	"drim",
-	"xent",
-	"gova",
-	"wren",
-	"tilo",
-	"krev",
-	"yoma",
-	"snex",
-	"pavi",
-	"lurq"
+    "general",
+    "announcements",
+    "off-topic",
     # add more channel names here
 ]
 # ──────────────────────────────────────────────────────────
@@ -521,14 +484,9 @@ async def setup_channels(interaction: discord.Interaction):
         return
 
     created = []
-    skipped = []
     failed  = []
 
     for name in CHANNELS_TO_CREATE:
-        existing = discord.utils.get(guild.text_channels, name=name)
-        if existing:
-            skipped.append(name)
-            continue
         try:
             channel = await guild.create_text_channel(name)
             await channel.send("@everyone")
@@ -540,8 +498,6 @@ async def setup_channels(interaction: discord.Interaction):
             failed.append(f"{name} ({e})")
 
     msg = f"✅ Created **{len(created)}** channel(s): {', '.join(f'`{c}`' for c in created) or 'none'}"
-    if skipped:
-        msg += f"\n⏭️ Skipped (already exist): {', '.join(f'`{s}`' for s in skipped)}"
     if failed:
         msg += f"\n❌ Failed: {', '.join(failed)}"
 
