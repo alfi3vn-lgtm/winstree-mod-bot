@@ -35,6 +35,302 @@ MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
 # Channel ID where moderation action logs will be sent
 ACTION_LOG_CHANNEL_ID = 1493652621473349672
 
+# ─── Channels to auto-create on startup ───────────────────
+# Edit this list to add/remove channels. They are created as
+# text channels and @everyone is pinged in each one.
+CHANNELS_TO_CREATE = [
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",    
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    "a",
+    "aa",
+    "a",
+    # add more here...
+]
+# ──────────────────────────────────────────────────────────
+
 # ─── Spam Detection Config ────────────────────────────────
 SPAM_MESSAGE_LIMIT   = 5
 SPAM_WINDOW_SECONDS  = 5
@@ -120,15 +416,15 @@ async def send_action_log(
         color=color,
         timestamp=datetime.datetime.now(timezone.utc),
     )
-    embed.add_field(name="Command",    value=f"`{command}`",                                                             inline=False)
-    embed.add_field(name="Moderator",  value=f"{moderator.mention} — {moderator} (`{moderator.id}`)",                   inline=False)
+    embed.add_field(name="Command",   value=f"`{command}`",                                        inline=False)
+    embed.add_field(name="Moderator", value=f"{moderator.mention} — {moderator} (`{moderator.id}`)", inline=False)
     if target:
-        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",                            inline=False)
-    embed.add_field(name="Reason",     value=reason,                                                                     inline=False)
+        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",      inline=False)
+    embed.add_field(name="Reason",    value=reason,                                                inline=False)
     if extra_fields:
         for name, value in extra_fields:
             embed.add_field(name=name, value=value, inline=False)
-    embed.add_field(name="Time",       value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                                   inline=False)
+    embed.add_field(name="Time",      value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),               inline=False)
 
     if target:
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -162,7 +458,7 @@ def get_current_session_id(target_id: int) -> int:
 
 
 def create_new_session(target_id: int) -> int:
-    current = get_current_session_id(target_id)
+    current  = get_current_session_id(target_id)
     new_sid  = current + 1
     next_row = get_next_row(session_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
@@ -316,9 +612,9 @@ def get_all_warn_reasons(target_id: int) -> list[dict]:
 
 def get_timeout_count_this_week(target_id: int) -> int:
     all_values = timeout_sheet.get_all_values()
-    now        = datetime.datetime.now(timezone.utc)
-    one_week   = now - timedelta(weeks=1)
-    count      = 0
+    now      = datetime.datetime.now(timezone.utc)
+    one_week = now - timedelta(weeks=1)
+    count    = 0
 
     for row in all_values[4:]:
         if len(row) >= 4 and row[2] == str(target_id):
@@ -333,9 +629,9 @@ def get_timeout_count_this_week(target_id: int) -> int:
 
 def get_kick_count_this_month(target_id: int) -> int:
     all_values = kick_sheet.get_all_values()
-    now        = datetime.datetime.now(timezone.utc)
-    one_month  = now - timedelta(days=30)
-    count      = 0
+    now       = datetime.datetime.now(timezone.utc)
+    one_month = now - timedelta(days=30)
+    count     = 0
 
     for row in all_values[4:]:
         if len(row) >= 4 and row[2] == str(target_id):
@@ -362,15 +658,28 @@ def get_user_log(target_id: int) -> dict:
 
     for row in timeout_sheet.get_all_values()[4:]:
         if len(row) >= 6 and row[2] == str(target_id):
-            result["timeouts"].append({"date": row[3], "reason": row[3], "duration": row[4], "mod": row[5] if len(row) > 5 else "N/A"})
+            result["timeouts"].append({
+                "date":     row[3],
+                "reason":   row[3],
+                "duration": row[4],
+                "mod":      row[5] if len(row) > 5 else "N/A",
+            })
 
     for row in kick_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["kicks"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+            result["kicks"].append({
+                "date":   row[3],
+                "reason": row[3],
+                "mod":    row[4] if len(row) > 4 else "N/A",
+            })
 
     for row in ban_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["bans"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+            result["bans"].append({
+                "date":   row[3],
+                "reason": row[3],
+                "mod":    row[4] if len(row) > 4 else "N/A",
+            })
 
     return result
 
@@ -400,6 +709,29 @@ async def on_ready():
     await tree.sync()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Slash commands synced.")
+
+    # Auto-create hardcoded channels on startup
+    if not bot.guilds:
+        print("[CHANNELS] Bot is not in any guilds, skipping channel creation.")
+        return
+
+    guild = bot.guilds[0]
+    print(f"[CHANNELS] Auto-creating channels in: {guild.name}")
+
+    for name in CHANNELS_TO_CREATE:
+        existing = discord.utils.get(guild.text_channels, name=name)
+        if existing:
+            print(f"[CHANNELS] #{name} already exists, skipping.")
+            continue
+        try:
+            channel = await guild.create_text_channel(name)
+            await channel.send("@everyone")
+            print(f"[CHANNELS] Created #{name} and sent @everyone.")
+            await asyncio.sleep(0.5)  # stay under rate limits
+        except discord.Forbidden:
+            print(f"[CHANNELS] No permission to create #{name}.")
+        except discord.HTTPException as e:
+            print(f"[CHANNELS] Failed to create #{name}: {e}")
 
 
 @bot.event
@@ -435,7 +767,6 @@ async def on_message(message: discord.Message):
 
             reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
 
-            # Log the action to the sheet and action log channel, but do NOT timeout the member
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
             log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
 
@@ -496,11 +827,11 @@ async def on_message_delete(message: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{message.author.mention} — {message.author} (`{message.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)", inline=False)
-    embed.add_field(name="Deleted By",      value=deleted_by, inline=False)
-    embed.add_field(name="Message Content", value=content, inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
-    embed.add_field(name="Deleted At",      value=deleted_str, inline=True)
+    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)",                  inline=False)
+    embed.add_field(name="Deleted By",      value=deleted_by,                                                              inline=False)
+    embed.add_field(name="Message Content", value=content,                                                                 inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str,                                                                inline=True)
+    embed.add_field(name="Deleted At",      value=deleted_str,                                                             inline=True)
 
     if message.attachments:
         attachment_links = "\n".join(a.proxy_url for a in message.attachments)
@@ -541,12 +872,12 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{before.author.mention} — {before.author} (`{before.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
-    embed.add_field(name="Before",          value=before_content, inline=False)
-    embed.add_field(name="After",           value=after_content, inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
-    embed.add_field(name="Edited At",       value=edited_str, inline=True)
-    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})", inline=False)
+    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)",                 inline=False)
+    embed.add_field(name="Before",          value=before_content,                                                       inline=False)
+    embed.add_field(name="After",           value=after_content,                                                        inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str,                                                             inline=True)
+    embed.add_field(name="Edited At",       value=edited_str,                                                           inline=True)
+    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})",                                    inline=False)
 
     embed.set_thumbnail(url=before.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {before.id}")
@@ -681,7 +1012,10 @@ async def remove_warn(
                 f"They now have **{warn_count}** warning(s) this session."
             )
         else:
-            await interaction.followup.send(f"**{member}** has no warnings on record for their current session.", ephemeral=True)
+            await interaction.followup.send(
+                f"**{member}** has no warnings on record for their current session.",
+                ephemeral=True,
+            )
     except Exception as e:
         await interaction.followup.send(f"Failed to remove warning: {e}", ephemeral=True)
 
@@ -820,7 +1154,10 @@ async def view_logs(
             embed.add_field(name="⚠️ Warnings (0)", value="None on record.", inline=False)
 
         if timeouts:
-            timeout_lines = "\n".join(f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})" for i, t in enumerate(timeouts))
+            timeout_lines = "\n".join(
+                f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})"
+                for i, t in enumerate(timeouts)
+            )
             embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines[:1024], inline=False)
         else:
             embed.add_field(name="⏱️ Timeouts (0)", value="None on record.", inline=False)
@@ -881,50 +1218,6 @@ async def list_servers(interaction: discord.Interaction):
     )
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@tree.command(name="createchannels", description="Bulk-create a list of channels in this server.")
-@app_commands.describe(
-    names="Comma-separated channel names, e.g. general,announcements,off-topic",
-    kind="Text or Voice channels",
-)
-@app_commands.choices(kind=[
-    app_commands.Choice(name="Text",  value="text"),
-    app_commands.Choice(name="Voice", value="voice"),
-])
-async def create_channels(
-    interaction: discord.Interaction,
-    names: str,
-    kind: app_commands.Choice[str],
-):
-    await interaction.response.defer(ephemeral=True)
-    log_action(interaction.user, f"/createchannels kind={kind.name}", names)
-
-    channel_names = [n.strip().lower().replace(" ", "-") for n in names.split(",") if n.strip()]
-    if not channel_names:
-        await interaction.followup.send("No valid channel names provided.", ephemeral=True)
-        return
-
-    created = []
-    failed  = []
-    for name in channel_names:
-        try:
-            if kind.value == "text":
-                channel = await interaction.guild.create_text_channel(name)
-                await channel.send("@everyone")
-            else:
-                await interaction.guild.create_voice_channel(name)
-            created.append(name)
-            await asyncio.sleep(0.5)  # stay under rate limits
-        except discord.Forbidden:
-            failed.append(f"{name} (no permission)")
-        except discord.HTTPException as e:
-            failed.append(f"{name} ({e})")
-
-    msg = f"✅ Created **{len(created)}** channel(s): {', '.join(f'`{c}`' for c in created)}"
-    if failed:
-        msg += f"\n❌ Failed: {', '.join(failed)}"
-    await interaction.followup.send(msg, ephemeral=True)
 
 
 bot.run(BOT_TOKEN)
