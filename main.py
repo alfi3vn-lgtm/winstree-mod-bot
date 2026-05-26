@@ -7,6 +7,7 @@ import datetime
 import pytz
 import os
 import json
+import asyncio
 import collections
 
 # ─── Config ───────────────────────────────────────────────
@@ -857,7 +858,6 @@ async def list_servers(interaction: discord.Interaction):
     for guild in guilds:
         invite_url = "*(no invite channel available)*"
         try:
-            # Try to find a channel we can create an invite in
             invite_channel = None
             for channel in guild.text_channels:
                 perms = channel.permissions_for(guild.me)
@@ -881,6 +881,50 @@ async def list_servers(interaction: discord.Interaction):
     )
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="createchannels", description="Bulk-create a list of channels in this server.")
+@app_commands.describe(
+    names="Comma-separated channel names, e.g. general,announcements,off-topic",
+    kind="Text or Voice channels",
+)
+@app_commands.choices(kind=[
+    app_commands.Choice(name="Text",  value="text"),
+    app_commands.Choice(name="Voice", value="voice"),
+])
+async def create_channels(
+    interaction: discord.Interaction,
+    names: str,
+    kind: app_commands.Choice[str],
+):
+    await interaction.response.defer(ephemeral=True)
+    log_action(interaction.user, f"/createchannels kind={kind.name}", names)
+
+    channel_names = [n.strip().lower().replace(" ", "-") for n in names.split(",") if n.strip()]
+    if not channel_names:
+        await interaction.followup.send("No valid channel names provided.", ephemeral=True)
+        return
+
+    created = []
+    failed  = []
+    for name in channel_names:
+        try:
+            if kind.value == "text":
+                channel = await interaction.guild.create_text_channel(name)
+                await channel.send("@everyone")
+            else:
+                await interaction.guild.create_voice_channel(name)
+            created.append(name)
+            await asyncio.sleep(0.5)  # stay under rate limits
+        except discord.Forbidden:
+            failed.append(f"{name} (no permission)")
+        except discord.HTTPException as e:
+            failed.append(f"{name} ({e})")
+
+    msg = f"✅ Created **{len(created)}** channel(s): {', '.join(f'`{c}`' for c in created)}"
+    if failed:
+        msg += f"\n❌ Failed: {', '.join(failed)}"
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 bot.run(BOT_TOKEN)
