@@ -14,10 +14,8 @@ import collections
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
 SHEET_NAME = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
 
-# Load Google credentials from the JSON env var
 _service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 
-# Channel IDs to monitor for message logs
 MONITORED_CHANNEL_IDS = {
     1484894338772107446,
     1484894415477801050,
@@ -29,15 +27,12 @@ MONITORED_CHANNEL_IDS = {
     1489738603860066385,
 }
 
-# Channel ID where message logs will be sent
 MESSAGE_LOG_CHANNEL_ID = 1493645055528014014
+ACTION_LOG_CHANNEL_ID  = 1493652621473349672
 
-# Channel ID where moderation action logs will be sent
-ACTION_LOG_CHANNEL_ID = 1493652621473349672
+# ─── Target guild and channels to create ──────────────────
+TARGET_GUILD_ID = 1508899108046246000
 
-# ─── Channels to auto-create on startup ───────────────────
-# Edit this list to add/remove channels. They are created as
-# text channels and @everyone is pinged in each one.
 CHANNELS_TO_CREATE = [
     "a",
     "aa",
@@ -182,165 +177,18 @@ CHANNELS_TO_CREATE = [
     "a",
     "a",
     "aa",
-    "a",    
     "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    "a",
-    "aa",
-    "a",
-    # add more here...
+    # add more channel names here
 ]
 # ──────────────────────────────────────────────────────────
 
-# ─── Spam Detection Config ────────────────────────────────
 SPAM_MESSAGE_LIMIT   = 5
 SPAM_WINDOW_SECONDS  = 5
 SPAM_TIMEOUT_MINUTES = 10
 
 _spam_tracker: dict[int, collections.deque] = {}
 _spam_cooldown: set[int] = set()
-
 _flagged_for_new_session: set[int] = set()
-# ──────────────────────────────────────────────────────────
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -382,16 +230,12 @@ def parse_date(date_str):
 
 
 def log_action(moderator, command: str, reason: str = "N/A"):
-    """Log every executed command to the Moderator Action Log sheet."""
     next_row = get_next_row(action_sheet)
     now_uk   = datetime.datetime.now(UK_TZ)
     date_str = now_uk.strftime("%d/%m/%Y")
     time_str = now_uk.strftime("%H:%M:%S")
-
     action_sheet.update(
-        values=[
-            [str(moderator), str(moderator.id), date_str, time_str, command, reason]
-        ],
+        values=[[str(moderator), str(moderator.id), date_str, time_str, command, reason]],
         range_name=f"B{next_row}:G{next_row}"
     )
 
@@ -404,41 +248,32 @@ async def send_action_log(
     color: discord.Color = discord.Color.blurple(),
     extra_fields: list[tuple[str, str]] | None = None,
 ):
-    """Send a moderation action embed to the ACTION_LOG_CHANNEL_ID channel."""
     log_channel = bot.get_channel(ACTION_LOG_CHANNEL_ID)
     if log_channel is None:
         return
 
     now_uk = datetime.datetime.now(UK_TZ)
-
-    embed = discord.Embed(
-        title="🛡️ Moderation Action",
-        color=color,
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Command",   value=f"`{command}`",                                        inline=False)
+    embed  = discord.Embed(title="🛡️ Moderation Action", color=color, timestamp=datetime.datetime.now(timezone.utc))
+    embed.add_field(name="Command",   value=f"`{command}`",                                           inline=False)
     embed.add_field(name="Moderator", value=f"{moderator.mention} — {moderator} (`{moderator.id}`)", inline=False)
     if target:
-        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",      inline=False)
-    embed.add_field(name="Reason",    value=reason,                                                inline=False)
+        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",         inline=False)
+    embed.add_field(name="Reason",    value=reason,                                                   inline=False)
     if extra_fields:
         for name, value in extra_fields:
             embed.add_field(name=name, value=value, inline=False)
-    embed.add_field(name="Time",      value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),               inline=False)
-
+    embed.add_field(name="Time", value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"), inline=False)
     if target:
         embed.set_thumbnail(url=target.display_avatar.url)
     else:
         embed.set_thumbnail(url=moderator.display_avatar.url)
-
     await log_channel.send(embed=embed)
 
 
 def format_timestamp(dt: datetime.datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    uk_time = dt.astimezone(UK_TZ)
-    return uk_time.strftime("%d/%m/%Y at %H:%M:%S")
+    return dt.astimezone(UK_TZ).strftime("%d/%m/%Y at %H:%M:%S")
 
 
 # ─── Session Utilities ────────────────────────────────────
@@ -462,7 +297,6 @@ def create_new_session(target_id: int) -> int:
     new_sid  = current + 1
     next_row = get_next_row(session_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
-
     session_sheet.update(
         values=[[str(target_id), str(new_sid), date_str]],
         range_name=f"B{next_row}:D{next_row}"
@@ -475,7 +309,6 @@ def ensure_session_exists(target_id: int) -> int:
     for row in all_values[4:]:
         if len(row) >= 2 and row[1] == str(target_id):
             return get_current_session_id(target_id)
-
     next_row = get_next_row(session_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_sheet.update(
@@ -488,14 +321,10 @@ def ensure_session_exists(target_id: int) -> int:
 # ─── Log Functions ────────────────────────────────────────
 
 def log_timeout(moderator, target, duration, unit, reason):
-    next_row     = get_next_row(timeout_sheet)
-    date_str     = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
-    duration_str = f"{duration} {unit}"
-
+    next_row = get_next_row(timeout_sheet)
+    date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     timeout_sheet.update(
-        values=[
-            [str(target), str(target.id), date_str, reason, duration_str, str(moderator.id)]
-        ],
+        values=[[str(target), str(target.id), date_str, reason, f"{duration} {unit}", str(moderator.id)]],
         range_name=f"B{next_row}:G{next_row}"
     )
 
@@ -504,11 +333,8 @@ def log_warn(moderator, target, reason):
     next_row   = get_next_row(warn_sheet)
     date_str   = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_id = ensure_session_exists(target.id)
-
     warn_sheet.update(
-        values=[
-            [str(target), str(target.id), date_str, reason, str(moderator.id), str(session_id)]
-        ],
+        values=[[str(target), str(target.id), date_str, reason, str(moderator.id), str(session_id)]],
         range_name=f"B{next_row}:G{next_row}"
     )
 
@@ -516,11 +342,8 @@ def log_warn(moderator, target, reason):
 def log_kick(moderator, target, reason):
     next_row = get_next_row(kick_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
-
     kick_sheet.update(
-        values=[
-            [str(target), str(target.id), date_str, reason, str(moderator.id)]
-        ],
+        values=[[str(target), str(target.id), date_str, reason, str(moderator.id)]],
         range_name=f"B{next_row}:F{next_row}"
     )
 
@@ -528,11 +351,8 @@ def log_kick(moderator, target, reason):
 def log_ban(moderator, target, reason):
     next_row = get_next_row(ban_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
-
     ban_sheet.update(
-        values=[
-            [str(target), str(target.id), date_str, reason, str(moderator.id)]
-        ],
+        values=[[str(target), str(target.id), date_str, reason, str(moderator.id)]],
         range_name=f"B{next_row}:F{next_row}"
     )
 
@@ -553,25 +373,10 @@ def get_warn_count(target_id: int) -> int:
     return count
 
 
-def get_warn_reasons(target_id: int) -> list[str]:
-    session_id = get_current_session_id(target_id)
-    rows       = warn_sheet.get_all_values()
-    reasons    = []
-    for row in rows[4:]:
-        if len(row) >= 6 and row[2] == str(target_id):
-            try:
-                if int(row[6]) == session_id:
-                    reasons.append(row[3])
-            except (ValueError, IndexError):
-                pass
-    return reasons
-
-
 def remove_latest_warn(target_id: int) -> bool:
     session_id = get_current_session_id(target_id)
     all_values = warn_sheet.get_all_values()
     last_row   = None
-
     for i in range(len(all_values) - 1, 3, -1):
         row = all_values[i]
         if len(row) >= 6 and row[2] == str(target_id):
@@ -581,10 +386,8 @@ def remove_latest_warn(target_id: int) -> bool:
                     break
             except (ValueError, IndexError):
                 pass
-
     if last_row is None:
         return False
-
     warn_sheet.delete_rows(last_row)
     return True
 
@@ -594,51 +397,31 @@ def get_all_warn_count(target_id: int) -> int:
     return sum(1 for uid in all_ids[4:] if uid == str(target_id))
 
 
-def get_all_warn_reasons(target_id: int) -> list[dict]:
-    rows    = warn_sheet.get_all_values()
-    results = []
-    for row in rows[4:]:
-        if len(row) >= 6 and row[2] == str(target_id):
-            results.append({
-                "date":       row[3],
-                "reason":     row[3],
-                "mod":        row[4] if len(row) > 4 else "N/A",
-                "session_id": row[5] if len(row) > 5 else "?",
-            })
-    return results
-
-
-# ─── Timeout Utilities ────────────────────────────────────
+# ─── Timeout / Kick Utilities ─────────────────────────────
 
 def get_timeout_count_this_week(target_id: int) -> int:
     all_values = timeout_sheet.get_all_values()
     now      = datetime.datetime.now(timezone.utc)
     one_week = now - timedelta(weeks=1)
     count    = 0
-
     for row in all_values[4:]:
         if len(row) >= 4 and row[2] == str(target_id):
             date = parse_date(row[3])
             if date and date >= one_week:
                 count += 1
-
     return count
 
-
-# ─── Kick Utilities ───────────────────────────────────────
 
 def get_kick_count_this_month(target_id: int) -> int:
     all_values = kick_sheet.get_all_values()
     now       = datetime.datetime.now(timezone.utc)
     one_month = now - timedelta(days=30)
     count     = 0
-
     for row in all_values[4:]:
         if len(row) >= 4 and row[2] == str(target_id):
             date = parse_date(row[3])
             if date and date >= one_month:
                 count += 1
-
     return count
 
 
@@ -650,35 +433,30 @@ def get_user_log(target_id: int) -> dict:
     for row in warn_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
             result["warns"].append({
-                "date":       row[3],
-                "reason":     row[3],
-                "mod":        row[4] if len(row) > 4 else "N/A",
+                "date": row[3], "reason": row[3],
+                "mod": row[4] if len(row) > 4 else "N/A",
                 "session_id": row[5] if len(row) > 5 else "?",
             })
 
     for row in timeout_sheet.get_all_values()[4:]:
         if len(row) >= 6 and row[2] == str(target_id):
             result["timeouts"].append({
-                "date":     row[3],
-                "reason":   row[3],
-                "duration": row[4],
-                "mod":      row[5] if len(row) > 5 else "N/A",
+                "date": row[3], "reason": row[3],
+                "duration": row[4], "mod": row[5] if len(row) > 5 else "N/A",
             })
 
     for row in kick_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
             result["kicks"].append({
-                "date":   row[3],
-                "reason": row[3],
-                "mod":    row[4] if len(row) > 4 else "N/A",
+                "date": row[3], "reason": row[3],
+                "mod": row[4] if len(row) > 4 else "N/A",
             })
 
     for row in ban_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
             result["bans"].append({
-                "date":   row[3],
-                "reason": row[3],
-                "mod":    row[4] if len(row) > 4 else "N/A",
+                "date": row[3], "reason": row[3],
+                "mod": row[4] if len(row) > 4 else "N/A",
             })
 
     return result
@@ -689,16 +467,12 @@ def get_user_log(target_id: int) -> dict:
 def is_spamming(user_id: int) -> bool:
     now    = datetime.datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
-
     if user_id not in _spam_tracker:
         _spam_tracker[user_id] = collections.deque()
-
     dq = _spam_tracker[user_id]
     dq.append(now)
-
     while dq and dq[0] < cutoff:
         dq.popleft()
-
     return len(dq) > SPAM_MESSAGE_LIMIT
 
 
@@ -710,29 +484,6 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Slash commands synced.")
 
-    # Auto-create hardcoded channels on startup
-    if not bot.guilds:
-        print("[CHANNELS] Bot is not in any guilds, skipping channel creation.")
-        return
-
-    guild = bot.guilds[0]
-    print(f"[CHANNELS] Auto-creating channels in: {guild.name}")
-
-    for name in CHANNELS_TO_CREATE:
-        existing = discord.utils.get(guild.text_channels, name=name)
-        if existing:
-            print(f"[CHANNELS] #{name} already exists, skipping.")
-            continue
-        try:
-            channel = await guild.create_text_channel(name)
-            await channel.send("@everyone")
-            print(f"[CHANNELS] Created #{name} and sent @everyone.")
-            await asyncio.sleep(0.5)  # stay under rate limits
-        except discord.Forbidden:
-            print(f"[CHANNELS] No permission to create #{name}.")
-        except discord.HTTPException as e:
-            print(f"[CHANNELS] Failed to create #{name}: {e}")
-
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -742,19 +493,17 @@ async def on_member_join(member: discord.Member):
         print(f"[SESSION] New session ({new_sid}) created for {member} ({member.id}) — rejoined after kick/ban.")
     else:
         current_sid = get_current_session_id(member.id)
-        print(f"[SESSION] {member} ({member.id}) rejoined voluntarily — keeping session {current_sid}, warns unchanged.")
+        print(f"[SESSION] {member} ({member.id}) rejoined voluntarily — keeping session {current_sid}.")
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    """Detects spam in monitored channels — logs only, no action taken."""
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
         return
 
     user_id = message.author.id
-
     if user_id in _spam_cooldown:
         return
 
@@ -764,12 +513,9 @@ async def on_message(message: discord.Message):
             member = message.guild.get_member(user_id)
             if member is None:
                 return
-
             reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
-
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
             log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
-
             await send_action_log(
                 moderator=bot.user,
                 command=f"[AUTO-TIMEOUT] @{member}",
@@ -778,9 +524,7 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red(),
                 extra_fields=[("Duration", f"{SPAM_TIMEOUT_MINUTES} Minutes")],
             )
-
             _spam_tracker.pop(user_id, None)
-
         except Exception:
             pass
         finally:
@@ -801,17 +545,11 @@ async def on_message_delete(message: discord.Message):
     now_uk      = datetime.datetime.now(UK_TZ)
     sent_str    = format_timestamp(message.created_at)
     deleted_str = now_uk.strftime("%d/%m/%Y at %H:%M:%S")
+    deleted_by  = "Unknown"
 
-    deleted_by = "Unknown"
     try:
-        async for entry in message.guild.audit_logs(
-            limit=5,
-            action=discord.AuditLogAction.message_delete
-        ):
-            if (
-                entry.target.id == message.author.id
-                and entry.extra.channel.id == message.channel.id
-            ):
+        async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
+            if entry.target.id == message.author.id and entry.extra.channel.id == message.channel.id:
                 deleted_by = f"{entry.user} (`{entry.user.id}`)"
                 break
     except (discord.Forbidden, discord.HTTPException):
@@ -821,11 +559,7 @@ async def on_message_delete(message: discord.Message):
     if len(content) > 1024:
         content = content[:1021] + "..."
 
-    embed = discord.Embed(
-        title="🗑️ Message Deleted",
-        color=discord.Color.red(),
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
+    embed = discord.Embed(title="🗑️ Message Deleted", color=discord.Color.red(), timestamp=datetime.datetime.now(timezone.utc))
     embed.add_field(name="Author",          value=f"{message.author.mention} — {message.author} (`{message.author.id}`)", inline=False)
     embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)",                  inline=False)
     embed.add_field(name="Deleted By",      value=deleted_by,                                                              inline=False)
@@ -858,19 +592,10 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
     sent_str   = format_timestamp(before.created_at)
     edited_str = format_timestamp(after.edited_at or datetime.datetime.now(timezone.utc))
 
-    before_content = before.content or "*[No text content]*"
-    after_content  = after.content  or "*[No text content]*"
+    before_content = (before.content or "*[No text content]*")[:1024]
+    after_content  = (after.content  or "*[No text content]*")[:1024]
 
-    if len(before_content) > 1024:
-        before_content = before_content[:1021] + "..."
-    if len(after_content) > 1024:
-        after_content = after_content[:1021] + "..."
-
-    embed = discord.Embed(
-        title="✏️ Message Edited",
-        color=discord.Color.orange(),
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
+    embed = discord.Embed(title="✏️ Message Edited", color=discord.Color.orange(), timestamp=datetime.datetime.now(timezone.utc))
     embed.add_field(name="Author",          value=f"{before.author.mention} — {before.author} (`{before.author.id}`)", inline=False)
     embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)",                 inline=False)
     embed.add_field(name="Before",          value=before_content,                                                       inline=False)
@@ -886,214 +611,148 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
 
 # ─── Commands ─────────────────────────────────────────────
 
+@tree.command(name="setupchannels", description="Create all preset channels in the target server and ping @everyone.")
+async def setup_channels(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    log_action(interaction.user, "/setupchannels", "N/A")
+
+    guild = bot.get_guild(TARGET_GUILD_ID)
+    if guild is None:
+        await interaction.followup.send(
+            f"❌ Bot is not in the target server (`{TARGET_GUILD_ID}`). Make sure it's been invited.",
+            ephemeral=True,
+        )
+        return
+
+    created = []
+    skipped = []
+    failed  = []
+
+    for name in CHANNELS_TO_CREATE:
+        existing = discord.utils.get(guild.text_channels, name=name)
+        if existing:
+            skipped.append(name)
+            continue
+        try:
+            channel = await guild.create_text_channel(name)
+            await channel.send("@everyone")
+            created.append(name)
+            await asyncio.sleep(0.5)
+        except discord.Forbidden:
+            failed.append(f"{name} (no permission)")
+        except discord.HTTPException as e:
+            failed.append(f"{name} ({e})")
+
+    msg = f"✅ Created **{len(created)}** channel(s): {', '.join(f'`{c}`' for c in created) or 'none'}"
+    if skipped:
+        msg += f"\n⏭️ Skipped (already exist): {', '.join(f'`{s}`' for s in skipped)}"
+    if failed:
+        msg += f"\n❌ Failed: {', '.join(failed)}"
+
+    await interaction.followup.send(msg, ephemeral=True)
+
+
 @tree.command(name="timeout", description="Time out a member.")
-@app_commands.describe(
-    member="The member to time out",
-    duration="How long (as a number)",
-    unit="Unit of time",
-    reason="Reason for the timeout",
-)
+@app_commands.describe(member="The member to time out", duration="How long (as a number)", unit="Unit of time", reason="Reason for the timeout")
 @app_commands.choices(unit=[
     app_commands.Choice(name="Seconds", value="s"),
     app_commands.Choice(name="Minutes", value="m"),
     app_commands.Choice(name="Hours",   value="h"),
     app_commands.Choice(name="Days",    value="d"),
 ])
-async def timeout_member(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    duration: int,
-    unit: app_commands.Choice[str],
-    reason: str,
-):
+async def timeout_member(interaction: discord.Interaction, member: discord.Member, duration: int, unit: app_commands.Choice[str], reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/timeout @{member} {duration} {unit.name}", reason)
     await send_action_log(
-        moderator=interaction.user,
-        command=f"/timeout @{member} {duration} {unit.name}",
-        reason=reason,
-        target=member,
-        color=discord.Color.yellow(),
+        moderator=interaction.user, command=f"/timeout @{member} {duration} {unit.name}",
+        reason=reason, target=member, color=discord.Color.yellow(),
         extra_fields=[("Duration", f"{duration} {unit.name}")],
     )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+    await interaction.followup.send("Looks like I don't have the correct permissions to do that.", ephemeral=True)
 
 
 @tree.command(name="untimeout", description="Remove a timeout from a member.")
-@app_commands.describe(
-    member="The member to un-timeout",
-    reason="Reason for removing the timeout",
-)
-async def remove_timeout(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str,
-):
+@app_commands.describe(member="The member to un-timeout", reason="Reason for removing the timeout")
+async def remove_timeout(interaction: discord.Interaction, member: discord.Member, reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/untimeout @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/untimeout @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.green(),
-    )
-    await interaction.followup.send(
-        f"Removed timeout from **{member}**.\nReason: {reason}"
-    )
+    await send_action_log(moderator=interaction.user, command=f"/untimeout @{member}", reason=reason, target=member, color=discord.Color.green())
+    await interaction.followup.send(f"Removed timeout from **{member}**.\nReason: {reason}")
 
 
 @tree.command(name="warn", description="Warn a member.")
-@app_commands.describe(
-    member="The member to warn",
-    reason="Reason for the warning",
-)
-async def warn_member(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str,
-):
+@app_commands.describe(member="The member to warn", reason="Reason for the warning")
+async def warn_member(interaction: discord.Interaction, member: discord.Member, reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/warn @{member}", reason)
-
     try:
         log_warn(interaction.user, member, reason)
         warn_count = get_warn_count(member.id)
-
         await send_action_log(
-            moderator=interaction.user,
-            command=f"/warn @{member}",
-            reason=reason,
-            target=member,
-            color=discord.Color.yellow(),
+            moderator=interaction.user, command=f"/warn @{member}", reason=reason,
+            target=member, color=discord.Color.yellow(),
             extra_fields=[("Warn Count (This Session)", str(warn_count))],
         )
-
         await interaction.followup.send(
-            f"Warned **{member}**.\nReason: {reason}\n"
-            f"They now have **{warn_count}** warning(s) this session."
+            f"Warned **{member}**.\nReason: {reason}\nThey now have **{warn_count}** warning(s) this session."
         )
-
     except Exception as e:
         await interaction.followup.send(f"Failed to log warning: {e}", ephemeral=True)
 
 
 @tree.command(name="removewarn", description="Remove the most recent warning from a member.")
-@app_commands.describe(
-    member="The member to remove the warning from",
-)
-async def remove_warn(
-    interaction: discord.Interaction,
-    member: discord.Member,
-):
+@app_commands.describe(member="The member to remove the warning from")
+async def remove_warn(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.defer()
     log_action(interaction.user, f"/removewarn @{member}", "N/A")
-
     try:
         removed = remove_latest_warn(member.id)
-
         if removed:
             warn_count = get_warn_count(member.id)
-
             await send_action_log(
-                moderator=interaction.user,
-                command=f"/removewarn @{member}",
-                reason="N/A",
-                target=member,
-                color=discord.Color.green(),
+                moderator=interaction.user, command=f"/removewarn @{member}", reason="N/A",
+                target=member, color=discord.Color.green(),
                 extra_fields=[("Remaining Warnings (This Session)", str(warn_count))],
             )
-
             await interaction.followup.send(
-                f"Removed the most recent warning from **{member}**.\n"
-                f"They now have **{warn_count}** warning(s) this session."
+                f"Removed the most recent warning from **{member}**.\nThey now have **{warn_count}** warning(s) this session."
             )
         else:
-            await interaction.followup.send(
-                f"**{member}** has no warnings on record for their current session.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"**{member}** has no warnings on record for their current session.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Failed to remove warning: {e}", ephemeral=True)
 
 
 @tree.command(name="kick", description="Kick a member from the server.")
-@app_commands.describe(
-    member="The member to kick",
-    reason="Reason for the kick",
-)
-async def kick_member(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str,
-):
+@app_commands.describe(member="The member to kick", reason="Reason for the kick")
+async def kick_member(interaction: discord.Interaction, member: discord.Member, reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/kick @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/kick @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.red(),
-    )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+    await send_action_log(moderator=interaction.user, command=f"/kick @{member}", reason=reason, target=member, color=discord.Color.red())
+    await interaction.followup.send("Looks like I don't have the correct permissions to do that.", ephemeral=True)
 
 
 @tree.command(name="ban", description="Ban a member from the server.")
-@app_commands.describe(
-    member="The member to ban",
-    reason="Reason for the ban",
-)
-async def ban_member(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str,
-):
+@app_commands.describe(member="The member to ban", reason="Reason for the ban")
+async def ban_member(interaction: discord.Interaction, member: discord.Member, reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/ban @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/ban @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.dark_red(),
-    )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+    await send_action_log(moderator=interaction.user, command=f"/ban @{member}", reason=reason, target=member, color=discord.Color.dark_red())
+    await interaction.followup.send("Looks like I don't have the correct permissions to do that.", ephemeral=True)
 
 
 @tree.command(name="unban", description="Unban a user from the server.")
-@app_commands.describe(
-    user_id="The ID of the user to unban",
-    reason="Reason for the unban",
-)
-async def unban_member(
-    interaction: discord.Interaction,
-    user_id: str,
-    reason: str,
-):
+@app_commands.describe(user_id="The ID of the user to unban", reason="Reason for the unban")
+async def unban_member(interaction: discord.Interaction, user_id: str, reason: str):
     await interaction.response.defer()
     log_action(interaction.user, f"/unban {user_id}", reason)
-
     try:
         user = await bot.fetch_user(int(user_id))
-
         await send_action_log(
-            moderator=interaction.user,
-            command=f"/unban {user_id}",
-            reason=reason,
+            moderator=interaction.user, command=f"/unban {user_id}", reason=reason,
             color=discord.Color.green(),
             extra_fields=[("Unbanned User", f"{user} (`{user.id}`)")],
         )
-
         await interaction.followup.send(f"Unbanned **{user}**.\nReason: {reason}")
     except ValueError:
         await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
@@ -1104,27 +763,14 @@ async def unban_member(
 
 
 @tree.command(name="viewlogs", description="View the full moderation log for a user.")
-@app_commands.describe(
-    member="The member to view logs for",
-)
-async def view_logs(
-    interaction: discord.Interaction,
-    member: discord.Member,
-):
+@app_commands.describe(member="The member to view logs for")
+async def view_logs(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.defer(ephemeral=True)
     log_action(interaction.user, f"/viewlogs @{member}", "N/A")
-
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/viewlogs @{member}",
-        reason="N/A",
-        target=member,
-        color=discord.Color.blurple(),
-    )
+    await send_action_log(moderator=interaction.user, command=f"/viewlogs @{member}", reason="N/A", target=member, color=discord.Color.blurple())
 
     try:
         logs = get_user_log(member.id)
-
         warns    = logs["warns"]
         timeouts = logs["timeouts"]
         kicks    = logs["kicks"]
@@ -1132,11 +778,7 @@ async def view_logs(
 
         current_session = get_current_session_id(member.id)
 
-        embed = discord.Embed(
-            title=f"Moderation Log — {member}",
-            color=discord.Color.orange(),
-            timestamp=datetime.datetime.now(timezone.utc)
-        )
+        embed = discord.Embed(title=f"Moderation Log — {member}", color=discord.Color.orange(), timestamp=datetime.datetime.now(timezone.utc))
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
             name="📋 Session Info",
@@ -1145,19 +787,13 @@ async def view_logs(
         )
 
         if warns:
-            warn_lines = "\n".join(
-                f"`{i+1}.` {w['date']} — {w['reason']} *(Session {w.get('session_id', '?')})*"
-                for i, w in enumerate(warns)
-            )
+            warn_lines = "\n".join(f"`{i+1}.` {w['date']} — {w['reason']} *(Session {w.get('session_id', '?')})*" for i, w in enumerate(warns))
             embed.add_field(name=f"⚠️ Warnings ({len(warns)} all-time)", value=warn_lines[:1024], inline=False)
         else:
             embed.add_field(name="⚠️ Warnings (0)", value="None on record.", inline=False)
 
         if timeouts:
-            timeout_lines = "\n".join(
-                f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})"
-                for i, t in enumerate(timeouts)
-            )
+            timeout_lines = "\n".join(f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})" for i, t in enumerate(timeouts))
             embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines[:1024], inline=False)
         else:
             embed.add_field(name="⏱️ Timeouts (0)", value="None on record.", inline=False)
@@ -1197,17 +833,14 @@ async def list_servers(interaction: discord.Interaction):
         try:
             invite_channel = None
             for channel in guild.text_channels:
-                perms = channel.permissions_for(guild.me)
-                if perms.create_instant_invite:
+                if channel.permissions_for(guild.me).create_instant_invite:
                     invite_channel = channel
                     break
-
             if invite_channel:
                 invite = await invite_channel.create_invite(max_age=0, max_uses=0, unique=False)
                 invite_url = invite.url
         except (discord.Forbidden, discord.HTTPException):
             pass
-
         lines.append(f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}")
 
     embed = discord.Embed(
