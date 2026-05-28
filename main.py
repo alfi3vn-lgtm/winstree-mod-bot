@@ -1,5 +1,6 @@
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from datetime import timedelta, timezone
 import gspread
 from google.oauth2.service_account import Credentials
@@ -64,7 +65,7 @@ _spreadsheet  = gc.open(SHEET_NAME)
 timeout_sheet = _spreadsheet.worksheet("Timeout Logs")
 warn_sheet    = _spreadsheet.worksheet("Warn Logs")
 kick_sheet    = _spreadsheet.worksheet("Kick Logs")
-exclude_sheet = _spreadsheet.worksheet("Ban Logs")
+exclude_sheet = _spreadsheet.worksheet("Exclusion Logs")
 action_sheet  = _spreadsheet.worksheet("Moderator Action Log")
 session_sheet = _spreadsheet.worksheet("Join Sessions")
 role_sheet    = _spreadsheet.worksheet("Role Log")
@@ -488,6 +489,63 @@ def is_spamming(user_id: int) -> bool:
     return len(dq) > SPAM_MESSAGE_LIMIT
 
 
+# ─── Exclusion Enforcement Loop ───────────────────────────
+
+@tasks.loop(minutes=5)
+async def enforce_exclusions():
+    """
+    Every 5 minutes, read the Role Log sheet and ensure every listed user
+    still has the exclude role. Re-applies it silently if they've somehow
+    lost it (e.g. a moderator accidentally removed it, or a role sync cleared it).
+    """
+    guild = bot.get_guild(ALLOWED_GUILD_ID)
+    if guild is None:
+        return
+
+    exclude_role = guild.get_role(EXCLUDE_ROLE_ID)
+    if exclude_role is None:
+        return
+
+    try:
+        all_values = role_sheet.get_all_values()
+    except Exception as e:
+        print(f"[ENFORCE] Failed to read Role Log sheet: {e}")
+        return
+
+    for row in all_values[4:]:
+        if len(row) < 3 or not row[2].strip():
+            continue
+        try:
+            user_id = int(row[2])
+        except ValueError:
+            continue
+
+        member = guild.get_member(user_id)
+        if member is None:
+            continue  # Not in the server — on_member_join handles re-entry
+
+        if exclude_role not in member.roles:
+            try:
+                await member.edit(roles=[exclude_role], reason="[ENFORCE] Exclusion re-applied by periodic check.")
+                print(f"[ENFORCE] Re-applied exclude role to {member} ({member.id}) — role was missing.")
+                await send_action_log(
+                    moderator=bot.user,
+                    command=f"[ENFORCE] @{member}",
+                    reason="Exclusion role was missing — re-applied by periodic enforcement check.",
+                    target=member,
+                    color=discord.Color.dark_red(),
+                )
+            except discord.Forbidden:
+                print(f"[ENFORCE] No permission to re-apply exclude role to {member} ({member.id}).")
+            except discord.HTTPException as e:
+                print(f"[ENFORCE] HTTP error for {member} ({member.id}): {e}")
+
+
+@enforce_exclusions.before_loop
+async def before_enforce():
+    await bot.wait_until_ready()
+
+
 # ─── Events ───────────────────────────────────────────────
 
 @bot.event
@@ -499,6 +557,9 @@ async def on_ready():
         print(f"ERROR syncing commands: {e}")
 
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    enforce_exclusions.start()
+    print("[ENFORCE] Exclusion enforcement loop started.")
 
     # Leave any guild that isn't the allowed one
     for guild in bot.guilds:
@@ -518,10 +579,34 @@ async def on_guild_join(guild: discord.Guild):
 @bot.event
 async def on_member_join(member: discord.Member):
     """
-    When a member rejoins, only create a new session if they were previously
-    kicked or excluded. Voluntary leaves carry the same session forward so warns
-    are not wiped by simply leaving and rejoining.
+    When a member rejoins:
+    - If they are in the Role Log (i.e. currently excluded), re-apply the
+      exclude role immediately so they cannot evade exclusion by leaving.
+    - If they were previously kicked/excluded (flagged), start a new session.
+    - Otherwise (voluntary leave), keep the same session and warns.
     """
+    # ── Exclusion evasion check (highest priority) ──────────────
+    saved_role_ids, sheet_row = get_saved_roles(member.id)
+    if sheet_row is not None:
+        exclude_role = member.guild.get_role(EXCLUDE_ROLE_ID)
+        if exclude_role:
+            try:
+                await member.edit(roles=[exclude_role], reason="Re-applying exclusion: member left and rejoined.")
+                print(f"[EXCLUDE] Re-applied exclude role to {member} ({member.id}) — rejoined while excluded.")
+                await send_action_log(
+                    moderator=bot.user,
+                    command=f"[AUTO-EXCLUDE] @{member}",
+                    reason="Member left and rejoined while excluded — exclusion re-applied automatically.",
+                    target=member,
+                    color=discord.Color.dark_red(),
+                )
+            except discord.Forbidden:
+                print(f"[EXCLUDE] Failed to re-apply exclude role to {member} ({member.id}) — missing permissions.")
+            except discord.HTTPException as e:
+                print(f"[EXCLUDE] HTTP error re-applying exclude role to {member} ({member.id}): {e}")
+        return  # Don't touch session logic — they're still excluded
+
+    # ── Session logic ────────────────────────────────────────────
     if member.id in _flagged_for_new_session:
         _flagged_for_new_session.discard(member.id)
         new_sid = create_new_session(member.id)
