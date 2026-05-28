@@ -7,7 +7,6 @@ import datetime
 import pytz
 import os
 import json
-import asyncio
 import collections
 
 # ─── Config ───────────────────────────────────────────────
@@ -17,8 +16,11 @@ SHEET_NAME = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
 # Load Google credentials from the JSON env var
 _service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 
-# Only allowed to operate in this guild
+# Only operate in this guild — leave all others
 ALLOWED_GUILD_ID = 1484747145893642373
+
+# The role given to "banned" members instead of a real Discord ban
+BAN_ROLE_ID = 1509602308684517609
 
 # Channel IDs to monitor for message logs
 MONITORED_CHANNEL_IDS = {
@@ -46,6 +48,8 @@ SPAM_TIMEOUT_MINUTES = 10
 _spam_tracker: dict[int, collections.deque] = {}
 _spam_cooldown: set[int] = set()
 
+# Members who were kicked or banned get a fresh session on next join.
+# Voluntary leaves do NOT trigger a new session — warns carry over.
 _flagged_for_new_session: set[int] = set()
 # ──────────────────────────────────────────────────────────
 
@@ -62,6 +66,8 @@ kick_sheet    = gc.open(SHEET_NAME).worksheet("Kick Logs")
 ban_sheet     = gc.open(SHEET_NAME).worksheet("Ban Logs")
 action_sheet  = gc.open(SHEET_NAME).worksheet("Moderator Action Log")
 session_sheet = gc.open(SHEET_NAME).worksheet("Join Sessions")
+role_sheet    = gc.open(SHEET_NAME).worksheet("Role Log")
+# Role Log columns: B=Username, C=UserID, D=Roles (comma-separated IDs)
 
 intents                 = discord.Intents.default()
 intents.members         = True
@@ -123,15 +129,15 @@ async def send_action_log(
         color=color,
         timestamp=datetime.datetime.now(timezone.utc),
     )
-    embed.add_field(name="Command",   value=f"`{command}`",                                           inline=False)
-    embed.add_field(name="Moderator", value=f"{moderator.mention} — {moderator} (`{moderator.id}`)", inline=False)
+    embed.add_field(name="Command",    value=f"`{command}`",                                                             inline=False)
+    embed.add_field(name="Moderator",  value=f"{moderator.mention} — {moderator} (`{moderator.id}`)",                   inline=False)
     if target:
-        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",         inline=False)
-    embed.add_field(name="Reason",    value=reason,                                                   inline=False)
+        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",                            inline=False)
+    embed.add_field(name="Reason",     value=reason,                                                                     inline=False)
     if extra_fields:
         for name, value in extra_fields:
             embed.add_field(name=name, value=value, inline=False)
-    embed.add_field(name="Time",      value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                  inline=False)
+    embed.add_field(name="Time",       value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                                   inline=False)
 
     if target:
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -151,6 +157,7 @@ def format_timestamp(dt: datetime.datetime) -> str:
 # ─── Session Utilities ────────────────────────────────────
 
 def get_current_session_id(target_id: int) -> int:
+    """Return the latest session ID for this user, or 1 if they have none."""
     all_values = session_sheet.get_all_values()
     latest = 0
     for row in all_values[4:]:
@@ -165,6 +172,11 @@ def get_current_session_id(target_id: int) -> int:
 
 
 def create_new_session(target_id: int) -> int:
+    """
+    Create a new session entry for a user.
+    Only called when a user rejoins after being kicked or banned.
+    Returns the new session ID.
+    """
     current = get_current_session_id(target_id)
     new_sid  = current + 1
     next_row = get_next_row(session_sheet)
@@ -178,11 +190,16 @@ def create_new_session(target_id: int) -> int:
 
 
 def ensure_session_exists(target_id: int) -> int:
+    """
+    Ensure a user has at least one session on record.
+    Returns the current session ID.
+    """
     all_values = session_sheet.get_all_values()
     for row in all_values[4:]:
         if len(row) >= 2 and row[1] == str(target_id):
             return get_current_session_id(target_id)
 
+    # No session found — create session 1
     next_row = get_next_row(session_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_sheet.update(
@@ -208,6 +225,7 @@ def log_timeout(moderator, target, duration, unit, reason):
 
 
 def log_warn(moderator, target, reason):
+    """Log a warning tied to the user's current session."""
     next_row   = get_next_row(warn_sheet)
     date_str   = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
     session_id = ensure_session_exists(target.id)
@@ -244,9 +262,79 @@ def log_ban(moderator, target, reason):
     )
 
 
+# ─── Role Log Utilities ───────────────────────────────────
+
+def log_role_ban(target: discord.Member, roles: list[discord.Role]):
+    """
+    Save the member's current roles to the Role Log sheet before applying the ban role.
+    Columns: B=Username, C=UserID, D=RoleIDs (comma-separated)
+    """
+    next_row  = get_next_row(role_sheet)
+    role_ids  = ",".join(str(r.id) for r in roles)
+    date_str  = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+
+    role_sheet.update(
+        values=[[str(target), str(target.id), role_ids]],
+        range_name=f"B{next_row}:D{next_row}"
+    )
+
+
+def get_saved_roles(target_id: int) -> tuple[list[str], int | None]:
+    """
+    Look up saved role IDs for a user in the Role Log sheet.
+    Returns (list_of_role_id_strings, sheet_row_number) or ([], None) if not found.
+    """
+    all_values = role_sheet.get_all_values()
+    for i, row in enumerate(all_values):
+        if i < 4:  # skip header rows (rows 1–4)
+            continue
+        if len(row) >= 3 and row[2] == str(target_id):
+            role_ids = [rid.strip() for rid in row[3].split(",") if rid.strip()] if len(row) > 3 else []
+            return role_ids, i + 1  # sheet row is 1-indexed
+    return [], None
+
+
+def remove_role_log_entry(sheet_row: int):
+    """Delete a row from the Role Log sheet by its 1-indexed row number."""
+    role_sheet.delete_rows(sheet_row)
+
+
+# ─── Ban Role Helper ──────────────────────────────────────
+
+async def apply_ban_role(
+    guild: discord.Guild,
+    member: discord.Member,
+    reason: str,
+    moderator,
+):
+    """
+    Instead of a real Discord ban:
+    1. Save the member's current roles to the Role Log sheet.
+    2. Remove all their roles.
+    3. Assign the BAN_ROLE_ID role.
+    4. Log to ban_sheet and flag for a new session.
+    """
+    ban_role = guild.get_role(BAN_ROLE_ID)
+    if ban_role is None:
+        raise ValueError(f"Ban role {BAN_ROLE_ID} not found in guild.")
+
+    # Roles to save: everything except @everyone
+    roles_to_save = [r for r in member.roles if r != guild.default_role]
+
+    # Persist to sheet before touching roles
+    log_role_ban(member, roles_to_save)
+
+    # Swap roles: remove all, add ban role
+    await member.edit(roles=[ban_role], reason=reason)
+
+    log_ban(moderator, member, reason)
+    _flagged_for_new_session.add(member.id)
+
+
 # ─── Warn Utilities ───────────────────────────────────────
 
 def get_warn_count(target_id: int) -> int:
+    """Count warns for the user's CURRENT session only."""
     session_id = get_current_session_id(target_id)
     all_values = warn_sheet.get_all_values()
     count = 0
@@ -261,6 +349,7 @@ def get_warn_count(target_id: int) -> int:
 
 
 def get_warn_reasons(target_id: int) -> list[str]:
+    """Get warn reasons for the user's CURRENT session only."""
     session_id = get_current_session_id(target_id)
     rows       = warn_sheet.get_all_values()
     reasons    = []
@@ -275,6 +364,7 @@ def get_warn_reasons(target_id: int) -> list[str]:
 
 
 def remove_latest_warn(target_id: int) -> bool:
+    """Remove the most recent warn for the user's CURRENT session."""
     session_id = get_current_session_id(target_id)
     all_values = warn_sheet.get_all_values()
     last_row   = None
@@ -297,11 +387,13 @@ def remove_latest_warn(target_id: int) -> bool:
 
 
 def get_all_warn_count(target_id: int) -> int:
+    """Count ALL warns across all sessions (for viewlogs)."""
     all_ids = warn_sheet.col_values(3)
     return sum(1 for uid in all_ids[4:] if uid == str(target_id))
 
 
 def get_all_warn_reasons(target_id: int) -> list[dict]:
+    """Get all warns across all sessions with session info (for viewlogs)."""
     rows    = warn_sheet.get_all_values()
     results = []
     for row in rows[4:]:
@@ -365,28 +457,15 @@ def get_user_log(target_id: int) -> dict:
 
     for row in timeout_sheet.get_all_values()[4:]:
         if len(row) >= 6 and row[2] == str(target_id):
-            result["timeouts"].append({
-                "date":     row[3],
-                "reason":   row[3],
-                "duration": row[4],
-                "mod":      row[5] if len(row) > 5 else "N/A",
-            })
+            result["timeouts"].append({"date": row[3], "reason": row[3], "duration": row[4], "mod": row[5] if len(row) > 5 else "N/A"})
 
     for row in kick_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["kicks"].append({
-                "date":   row[3],
-                "reason": row[3],
-                "mod":    row[4] if len(row) > 4 else "N/A",
-            })
+            result["kicks"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
 
     for row in ban_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["bans"].append({
-                "date":   row[3],
-                "reason": row[3],
-                "mod":    row[4] if len(row) > 4 else "N/A",
-            })
+            result["bans"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
 
     return result
 
@@ -417,39 +496,28 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Slash commands synced.")
 
-    # Leave any unauthorized guilds found on startup
+    # Leave any guild that isn't the allowed one
     for guild in bot.guilds:
         if guild.id != ALLOWED_GUILD_ID:
-            print(f"[SECURITY] Found unauthorized server '{guild.name}' ({guild.id}) on startup — leaving.")
-            try:
-                if guild.owner:
-                    await guild.owner.send(
-                        f"This bot is restricted to a specific server and cannot be used elsewhere. "
-                        f"It has left **{guild.name}** automatically."
-                    )
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            print(f"[GUILD GUARD] Leaving unauthorised guild: {guild.name} ({guild.id})")
             await guild.leave()
 
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    """Immediately leave any server that isn't the authorised guild."""
+    """Immediately leave any guild we're added to that isn't the allowed one."""
     if guild.id != ALLOWED_GUILD_ID:
-        print(f"[SECURITY] Added to unauthorized server '{guild.name}' ({guild.id}) — leaving.")
-        try:
-            if guild.owner:
-                await guild.owner.send(
-                    f"This bot is restricted to a specific server and cannot be added elsewhere. "
-                    f"It has left **{guild.name}** automatically."
-                )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        print(f"[GUILD GUARD] Added to unauthorised guild: {guild.name} ({guild.id}) — leaving.")
         await guild.leave()
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    """
+    When a member rejoins, only create a new session if they were previously
+    kicked or banned. Voluntary leaves carry the same session forward so warns
+    are not wiped by simply leaving and rejoining.
+    """
     if member.id in _flagged_for_new_session:
         _flagged_for_new_session.discard(member.id)
         new_sid = create_new_session(member.id)
@@ -461,7 +529,7 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
-    """Detects spam in monitored channels — logs only, no action taken."""
+    """Detects spam in monitored channels and auto-times-out the offender."""
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
@@ -479,12 +547,11 @@ async def on_message(message: discord.Message):
             if member is None:
                 return
 
-            reason = (
-                f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages "
-                f"in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
-            )
+            delta  = timedelta(minutes=SPAM_TIMEOUT_MINUTES)
+            reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
 
-            # Log the action to the sheet and action log channel, but do NOT timeout the member
+            await member.timeout(delta, reason=reason)
+
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
             log_action(bot.user, f"[AUTO-TIMEOUT] @{member} — spam detection", reason)
 
@@ -497,9 +564,24 @@ async def on_message(message: discord.Message):
                 extra_fields=[("Duration", f"{SPAM_TIMEOUT_MINUTES} Minutes")],
             )
 
+            await message.channel.send(
+                f"🚨 {member.mention} has been timed out for **{SPAM_TIMEOUT_MINUTES} minutes** for spamming.",
+                delete_after=10,
+            )
+
+            try:
+                await member.send(
+                    f"You have been timed out in **{message.guild.name}** for **{SPAM_TIMEOUT_MINUTES} minutes**.\n"
+                    f"Reason: {reason}"
+                )
+            except discord.Forbidden:
+                pass
+
             _spam_tracker.pop(user_id, None)
 
-        except Exception:
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
             pass
         finally:
             _spam_cooldown.discard(user_id)
@@ -507,6 +589,7 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_message_delete(message: discord.Message):
+    """Fires when a message is deleted in a monitored channel."""
     if message.author.bot:
         return
     if message.channel.id not in MONITORED_CHANNEL_IDS:
@@ -545,19 +628,15 @@ async def on_message_delete(message: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{message.author.mention} — {message.author} (`{message.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)",                  inline=False)
-    embed.add_field(name="Deleted By",      value=deleted_by,                                                              inline=False)
-    embed.add_field(name="Message Content", value=content,                                                                 inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str,                                                                inline=True)
-    embed.add_field(name="Deleted At",      value=deleted_str,                                                             inline=True)
+    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)", inline=False)
+    embed.add_field(name="Deleted By",      value=deleted_by, inline=False)
+    embed.add_field(name="Message Content", value=content, inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
+    embed.add_field(name="Deleted At",      value=deleted_str, inline=True)
 
     if message.attachments:
         attachment_links = "\n".join(a.proxy_url for a in message.attachments)
-        embed.add_field(
-            name=f"Attachments ({len(message.attachments)})",
-            value=attachment_links[:1024],
-            inline=False,
-        )
+        embed.add_field(name=f"Attachments ({len(message.attachments)})", value=attachment_links[:1024], inline=False)
 
     embed.set_thumbnail(url=message.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {message.id}")
@@ -566,6 +645,7 @@ async def on_message_delete(message: discord.Message):
 
 @bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message):
+    """Fires when a message is edited in a monitored channel."""
     if before.author.bot:
         return
     if before.channel.id not in MONITORED_CHANNEL_IDS:
@@ -594,12 +674,12 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{before.author.mention} — {before.author} (`{before.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)",                 inline=False)
-    embed.add_field(name="Before",          value=before_content,                                                       inline=False)
-    embed.add_field(name="After",           value=after_content,                                                        inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str,                                                             inline=True)
-    embed.add_field(name="Edited At",       value=edited_str,                                                           inline=True)
-    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})",                                    inline=False)
+    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
+    embed.add_field(name="Before",          value=before_content, inline=False)
+    embed.add_field(name="After",           value=after_content, inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
+    embed.add_field(name="Edited At",       value=edited_str, inline=True)
+    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})", inline=False)
 
     embed.set_thumbnail(url=before.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {before.id}")
@@ -630,18 +710,70 @@ async def timeout_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/timeout @{member} {duration} {unit.name}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/timeout @{member} {duration} {unit.name}",
-        reason=reason,
-        target=member,
-        color=discord.Color.yellow(),
-        extra_fields=[("Duration", f"{duration} {unit.name}")],
-    )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+
+    unit_map = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    delta    = timedelta(**{unit_map[unit.value]: duration})
+
+    if delta.total_seconds() > 60 * 60 * 24 * 28:
+        await interaction.followup.send("Timeout duration cannot exceed 28 days.", ephemeral=True)
+        return
+
+    try:
+        await member.timeout(delta, reason=reason)
+        log_timeout(interaction.user, member, duration, unit.name, reason)
+
+        timeout_count = get_timeout_count_this_week(member.id)
+
+        if timeout_count >= 5:
+            try:
+                await member.send(
+                    f"You have been **kicked** from the server.\n"
+                    f"Reason: You have been timed out **{timeout_count} times** in the last 7 days."
+                )
+            except discord.Forbidden:
+                pass
+
+            await member.kick(reason="Auto-kick: 5 timeouts in 1 week.")
+            log_kick(interaction.user, member, "Auto-kick: 5 timeouts in 1 week.")
+            log_action(interaction.user, f"/timeout @{member} [AUTO-KICK TRIGGERED]", "5 timeouts in 1 week")
+
+            # Flag for a fresh session when they rejoin
+            _flagged_for_new_session.add(member.id)
+
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/timeout @{member} {duration} {unit.name}",
+                reason=reason,
+                target=member,
+                color=discord.Color.red(),
+                extra_fields=[
+                    ("Duration", f"{duration} {unit.name}"),
+                    ("⚠️ Auto-Kick Triggered", f"{member} has been kicked for receiving {timeout_count} timeouts in the last 7 days."),
+                ],
+            )
+
+            await interaction.followup.send(
+                f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}\n\n"
+                f"⚠️ **{member}** has been **kicked** for receiving **{timeout_count} timeouts** in the last 7 days."
+            )
+        else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/timeout @{member} {duration} {unit.name}",
+                reason=reason,
+                target=member,
+                color=discord.Color.yellow(),
+                extra_fields=[("Duration", f"{duration} {unit.name}")],
+            )
+
+            await interaction.followup.send(
+                f"Timed out **{member}** for **{duration} {unit.name}**.\nReason: {reason}"
+            )
+
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to timeout that member.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Failed to timeout member: {e}", ephemeral=True)
 
 
 @tree.command(name="untimeout", description="Remove a timeout from a member.")
@@ -656,16 +788,27 @@ async def remove_timeout(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/untimeout @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/untimeout @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.green(),
-    )
-    await interaction.followup.send(
-        f"Removed timeout from **{member}**.\nReason: {reason}"
-    )
+
+    if member.timed_out_until is None:
+        await interaction.followup.send(f"**{member}** is not currently timed out.", ephemeral=True)
+        return
+
+    try:
+        await member.timeout(None, reason=reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/untimeout @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.green(),
+        )
+
+        await interaction.followup.send(f"Removed timeout from **{member}**.\nReason: {reason}")
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to modify that member.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Failed to remove timeout: {e}", ephemeral=True)
 
 
 @tree.command(name="warn", description="Warn a member.")
@@ -685,19 +828,141 @@ async def warn_member(
         log_warn(interaction.user, member, reason)
         warn_count = get_warn_count(member.id)
 
-        await send_action_log(
-            moderator=interaction.user,
-            command=f"/warn @{member}",
-            reason=reason,
-            target=member,
-            color=discord.Color.yellow(),
-            extra_fields=[("Warn Count (This Session)", str(warn_count))],
-        )
+        if warn_count == 2:
+            try:
+                await member.timeout(timedelta(hours=1), reason="Reached 2 warnings.")
+                log_timeout(interaction.user, member, 1, "Hours", "Reached 2 warnings.")
+                log_action(interaction.user, f"/warn @{member} [AUTO-TIMEOUT TRIGGERED]", "Reached 2 warnings")
 
-        await interaction.followup.send(
-            f"Warned **{member}**.\nReason: {reason}\n"
-            f"They now have **{warn_count}** warning(s) this session."
-        )
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.orange(),
+                    extra_fields=[
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Timeout Triggered", f"{member} has been timed out for 1 hour for reaching 2 warnings."),
+                    ],
+                )
+
+                await interaction.followup.send(
+                    f"Warned **{member}**.\nReason: {reason}\n\n"
+                    f"⚠️ **{member}** has reached **2 warnings** this session and has been timed out for **1 hour**."
+                )
+            except discord.Forbidden:
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.orange(),
+                    extra_fields=[
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Timeout Failed", "Missing permissions to timeout."),
+                    ],
+                )
+                await interaction.followup.send(
+                    f"Warned **{member}**.\nReason: {reason}\n\n"
+                    f"⚠️ **{member}** has reached **2 warnings** but I don't have permission to time them out."
+                )
+
+        elif warn_count >= 3:
+            reasons      = get_warn_reasons(member.id)
+            reasons_text = "\n".join(f"{i+1}. {r}" for i, r in enumerate(reasons))
+
+            try:
+                await member.send(
+                    f"You have been **kicked** from the server for receiving **3 warnings** this session.\n\n"
+                    f"**Your warnings this session:**\n{reasons_text}"
+                )
+            except discord.Forbidden:
+                pass
+
+            await member.kick(reason="Auto-kick: Received 3 warnings this session.")
+            log_kick(interaction.user, member, "Auto-kick: Received 3 warnings this session.")
+            log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings this session")
+
+            # Flag for a fresh session when they rejoin
+            _flagged_for_new_session.add(member.id)
+
+            kick_count = get_kick_count_this_month(member.id)
+
+            if kick_count >= 3:
+                # Fetch fresh member object after kick — they may no longer be in the guild,
+                # so we do a best-effort DM then apply the ban role if they're still present.
+                live_member = interaction.guild.get_member(member.id)
+                if live_member:
+                    try:
+                        await live_member.send(
+                            f"You have also been **banned** from the server.\n"
+                            f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
+                        )
+                    except discord.Forbidden:
+                        pass
+
+                    await apply_ban_role(
+                        interaction.guild, live_member,
+                        "Auto-ban: 3 kicks in 1 month.",
+                        interaction.user,
+                    )
+                else:
+                    # Member already left after kick; log the ban anyway
+                    log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
+                    _flagged_for_new_session.add(member.id)
+
+                log_action(interaction.user, f"/warn @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.dark_red(),
+                    extra_fields=[
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
+                        ("⛔ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                    ],
+                )
+
+                await interaction.followup.send(
+                    f"Warned **{member}**.\nReason: {reason}\n\n"
+                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked**.\n"
+                    f"⛔ They have also been **banned** (ban role applied) for receiving **{kick_count} kicks** in the last 30 days."
+                )
+            else:
+                await send_action_log(
+                    moderator=interaction.user,
+                    command=f"/warn @{member}",
+                    reason=reason,
+                    target=member,
+                    color=discord.Color.red(),
+                    extra_fields=[
+                        ("Warn Count (This Session)", str(warn_count)),
+                        ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
+                    ],
+                )
+
+                await interaction.followup.send(
+                    f"Warned **{member}**.\nReason: {reason}\n\n"
+                    f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked** from the server."
+                )
+
+        else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/warn @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.yellow(),
+                extra_fields=[("Warn Count (This Session)", str(warn_count))],
+            )
+
+            await interaction.followup.send(
+                f"Warned **{member}**.\nReason: {reason}\n"
+                f"They now have **{warn_count}** warning(s) this session."
+            )
 
     except Exception as e:
         await interaction.followup.send(f"Failed to log warning: {e}", ephemeral=True)
@@ -734,10 +999,7 @@ async def remove_warn(
                 f"They now have **{warn_count}** warning(s) this session."
             )
         else:
-            await interaction.followup.send(
-                f"**{member}** has no warnings on record for their current session.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"**{member}** has no warnings on record for their current session.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Failed to remove warning: {e}", ephemeral=True)
 
@@ -754,20 +1016,72 @@ async def kick_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/kick @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/kick @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.red(),
-    )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+
+    try:
+        await member.kick(reason=reason)
+        log_kick(interaction.user, member, reason)
+
+        # Flag for a fresh session when they rejoin
+        _flagged_for_new_session.add(member.id)
+
+        kick_count = get_kick_count_this_month(member.id)
+
+        if kick_count >= 3:
+            # Member was just kicked — check if still present before applying ban role
+            live_member = interaction.guild.get_member(member.id)
+            if live_member:
+                try:
+                    await live_member.send(
+                        f"You have been **banned** from the server.\n"
+                        f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
+                    )
+                except discord.Forbidden:
+                    pass
+
+                await apply_ban_role(
+                    interaction.guild, live_member,
+                    "Auto-ban: 3 kicks in 1 month.",
+                    interaction.user,
+                )
+            else:
+                log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
+                _flagged_for_new_session.add(member.id)
+
+            log_action(interaction.user, f"/kick @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/kick @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.dark_red(),
+                extra_fields=[
+                    ("⚠️ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                ],
+            )
+
+            await interaction.followup.send(
+                f"Kicked **{member}**.\nReason: {reason}\n\n"
+                f"⚠️ **{member}** has been **banned** (ban role applied) for receiving **{kick_count} kicks** in the last 30 days."
+            )
+        else:
+            await send_action_log(
+                moderator=interaction.user,
+                command=f"/kick @{member}",
+                reason=reason,
+                target=member,
+                color=discord.Color.red(),
+            )
+
+            await interaction.followup.send(f"Kicked **{member}**.\nReason: {reason}")
+
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to kick that member.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Failed to kick member: {e}", ephemeral=True)
 
 
-@tree.command(name="ban", description="Ban a member from the server.")
+@tree.command(name="ban", description="Ban a member from the server (applies ban role, removes all other roles).")
 @app_commands.describe(
     member="The member to ban",
     reason="Reason for the ban",
@@ -779,20 +1093,29 @@ async def ban_member(
 ):
     await interaction.response.defer()
     log_action(interaction.user, f"/ban @{member}", reason)
-    await send_action_log(
-        moderator=interaction.user,
-        command=f"/ban @{member}",
-        reason=reason,
-        target=member,
-        color=discord.Color.dark_red(),
-    )
-    await interaction.followup.send(
-        "Looks like I don't have the correct permissions to do that.",
-        ephemeral=True,
-    )
+
+    try:
+        await apply_ban_role(interaction.guild, member, reason, interaction.user)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/ban @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.dark_red(),
+        )
+
+        await interaction.followup.send(
+            f"Banned **{member}**.\nReason: {reason}\n"
+            f"Their roles have been removed and the ban role has been applied. Previous roles are saved for restoration."
+        )
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to manage that member's roles.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Failed to ban member: {e}", ephemeral=True)
 
 
-@tree.command(name="unban", description="Unban a user from the server.")
+@tree.command(name="unban", description="Unban a user — removes the ban role and restores their previous roles.")
 @app_commands.describe(
     user_id="The ID of the user to unban",
     reason="Reason for the unban",
@@ -806,21 +1129,77 @@ async def unban_member(
     log_action(interaction.user, f"/unban {user_id}", reason)
 
     try:
-        user = await bot.fetch_user(int(user_id))
+        target_id = int(user_id)
+    except ValueError:
+        await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
+        return
+
+    # Look up saved roles in the Role Log sheet
+    saved_role_ids, sheet_row = get_saved_roles(target_id)
+
+    if sheet_row is None:
+        await interaction.followup.send(
+            f"No ban role record found for user ID `{user_id}`. "
+            "They may not have been banned through this bot, or the record was already removed.",
+            ephemeral=True,
+        )
+        return
+
+    member = interaction.guild.get_member(target_id)
+    if member is None:
+        await interaction.followup.send(
+            f"User `{user_id}` is not currently in the server. "
+            "The Role Log entry has been kept so roles can be restored when they rejoin.",
+            ephemeral=True,
+        )
+        return
+
+    ban_role = interaction.guild.get_role(BAN_ROLE_ID)
+
+    # Resolve saved role objects, skipping any that no longer exist
+    roles_to_restore = []
+    missing_role_ids = []
+    for rid in saved_role_ids:
+        role = interaction.guild.get_role(int(rid))
+        if role is not None:
+            roles_to_restore.append(role)
+        else:
+            missing_role_ids.append(rid)
+
+    try:
+        await member.edit(roles=roles_to_restore, reason=reason)
+
+        # Remove the entry from the Role Log sheet
+        remove_role_log_entry(sheet_row)
 
         await send_action_log(
             moderator=interaction.user,
             command=f"/unban {user_id}",
             reason=reason,
+            target=member,
             color=discord.Color.green(),
-            extra_fields=[("Unbanned User", f"{user} (`{user.id}`)")],
+            extra_fields=[
+                ("Roles Restored", ", ".join(r.mention for r in roles_to_restore) or "None"),
+                *(
+                    [("⚠️ Missing Roles (no longer exist)", ", ".join(missing_role_ids))]
+                    if missing_role_ids else []
+                ),
+            ],
         )
 
-        await interaction.followup.send(f"Unbanned **{user}**.\nReason: {reason}")
-    except ValueError:
-        await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
-    except discord.NotFound:
-        await interaction.followup.send("That user is not banned or does not exist.", ephemeral=True)
+        restored_str = ", ".join(r.name for r in roles_to_restore) if roles_to_restore else "None"
+        reply = (
+            f"Unbanned **{member}** — ban role removed and previous roles restored.\n"
+            f"Reason: {reason}\n"
+            f"**Restored roles:** {restored_str}"
+        )
+        if missing_role_ids:
+            reply += f"\n⚠️ Some roles no longer exist and could not be restored: `{'`, `'.join(missing_role_ids)}`"
+
+        await interaction.followup.send(reply)
+
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to manage that member's roles.", ephemeral=True)
     except discord.HTTPException as e:
         await interaction.followup.send(f"Failed to unban member: {e}", ephemeral=True)
 
@@ -854,16 +1233,24 @@ async def view_logs(
 
         current_session = get_current_session_id(member.id)
 
+        # Check if currently ban-roled
+        _, ban_entry_row = get_saved_roles(member.id)
+        ban_role         = interaction.guild.get_role(BAN_ROLE_ID)
+        is_banned        = ban_role is not None and ban_role in member.roles
+
         embed = discord.Embed(
             title=f"Moderation Log — {member}",
             color=discord.Color.orange(),
-            timestamp=datetime.datetime.now(timezone.utc),
+            timestamp=datetime.datetime.now(timezone.utc)
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
             name="📋 Session Info",
-            value=f"Current session: **{current_session}** (warns reset on kick/ban, not on voluntary leave)",
-            inline=False,
+            value=(
+                f"Current session: **{current_session}** (warns reset on kick/ban, not on voluntary leave)\n"
+                + (f"🚫 **Currently banned** (ban role active)" if is_banned else "")
+            ),
+            inline=False
         )
 
         if warns:
@@ -876,28 +1263,19 @@ async def view_logs(
             embed.add_field(name="⚠️ Warnings (0)", value="None on record.", inline=False)
 
         if timeouts:
-            timeout_lines = "\n".join(
-                f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})"
-                for i, t in enumerate(timeouts)
-            )
+            timeout_lines = "\n".join(f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})" for i, t in enumerate(timeouts))
             embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines[:1024], inline=False)
         else:
             embed.add_field(name="⏱️ Timeouts (0)", value="None on record.", inline=False)
 
         if kicks:
-            kick_lines = "\n".join(
-                f"`{i+1}.` {k['date']} — {k['reason']}"
-                for i, k in enumerate(kicks)
-            )
+            kick_lines = "\n".join(f"`{i+1}.` {k['date']} — {k['reason']}" for i, k in enumerate(kicks))
             embed.add_field(name=f"👢 Kicks ({len(kicks)})", value=kick_lines[:1024], inline=False)
         else:
             embed.add_field(name="👢 Kicks (0)", value="None on record.", inline=False)
 
         if bans:
-            ban_lines = "\n".join(
-                f"`{i+1}.` {b['date']} — {b['reason']}"
-                for i, b in enumerate(bans)
-            )
+            ban_lines = "\n".join(f"`{i+1}.` {b['date']} — {b['reason']}" for i, b in enumerate(bans))
             embed.add_field(name=f"⛔ Bans ({len(bans)})", value=ban_lines[:1024], inline=False)
         else:
             embed.add_field(name="⛔ Bans (0)", value="None on record.", inline=False)
@@ -908,202 +1286,5 @@ async def view_logs(
     except Exception as e:
         await interaction.followup.send(f"Failed to retrieve logs: {e}", ephemeral=True)
 
-
-@tree.command(name="createchannels", description="Bulk-create a list of channels in this server.")
-@app_commands.describe(
-    names="Comma-separated channel names, e.g. general,announcements,off-topic",
-    kind="Text or Voice channels",
-)
-@app_commands.choices(kind=[
-    app_commands.Choice(name="Text",  value="text"),
-    app_commands.Choice(name="Voice", value="voice"),
-])
-async def create_channels(
-    interaction: discord.Interaction,
-    names: str,
-    kind: app_commands.Choice[str],
-):
-    await interaction.response.defer(ephemeral=True)
-    log_action(interaction.user, f"/createchannels kind={kind.name}", names)
-
-    channel_names = [n.strip().lower().replace(" ", "-") for n in names.split(",") if n.strip()]
-    if not channel_names:
-        await interaction.followup.send("No valid channel names provided.", ephemeral=True)
-        return
-
-    created = []
-    failed  = []
-    for name in channel_names:
-        try:
-            if kind.value == "text":
-                await interaction.guild.create_text_channel(name)
-            else:
-                await interaction.guild.create_voice_channel(name)
-            created.append(name)
-            await asyncio.sleep(0.5)
-        except discord.Forbidden:
-            failed.append(f"{name} (no permission)")
-        except discord.HTTPException as e:
-            failed.append(f"{name} ({e})")
-
-    msg = f"✅ Created **{len(created)}** channel(s): {', '.join(f'`{c}`' for c in created)}"
-    if failed:
-        msg += f"\n❌ Failed: {', '.join(failed)}"
-    await interaction.followup.send(msg, ephemeral=True)
-
-
-# ─── Servers Command (with Leave option) ──────────────────
-
-class LeaveServerSelect(discord.ui.Select):
-    def __init__(self, guilds: list[discord.Guild], invoker: discord.User | discord.Member):
-        self.invoker = invoker
-        options = [
-            discord.SelectOption(
-                label=guild.name[:100],
-                value=str(guild.id),
-                description=f"{guild.member_count} members · ID: {guild.id}",
-            )
-            for guild in guilds
-        ]
-        super().__init__(
-            placeholder="Choose a server to leave…",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message(
-                "This menu isn't for you.", ephemeral=True
-            )
-            return
-
-        guild_id   = int(self.values[0])
-        guild      = bot.get_guild(guild_id)
-        guild_name = guild.name if guild else f"Unknown ({guild_id})"
-
-        view = ConfirmLeaveView(
-            guild_id=guild_id,
-            guild_name=guild_name,
-            invoker=interaction.user,
-        )
-        await interaction.response.send_message(
-            f"⚠️ Are you sure you want the bot to **leave {guild_name}**? This cannot be undone.",
-            view=view,
-            ephemeral=True,
-        )
-
-
-class ConfirmLeaveView(discord.ui.View):
-    def __init__(
-        self,
-        guild_id: int,
-        guild_name: str,
-        invoker: discord.User | discord.Member,
-    ):
-        super().__init__(timeout=60)
-        self.guild_id   = guild_id
-        self.guild_name = guild_name
-        self.invoker    = invoker
-
-    @discord.ui.button(label="✅ Confirm Leave", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message(
-                "This isn't your confirmation.", ephemeral=True
-            )
-            return
-
-        guild = bot.get_guild(self.guild_id)
-        if guild is None:
-            await interaction.response.send_message(
-                "Could not find that server — it may have already been left.",
-                ephemeral=True,
-            )
-            self.stop()
-            return
-
-        log_action(
-            interaction.user,
-            f"/servers → leave {self.guild_name} ({self.guild_id})",
-            "Manual leave via /servers",
-        )
-        await send_action_log(
-            moderator=interaction.user,
-            command="/servers → Leave Server",
-            reason="Manual leave via /servers command",
-            color=discord.Color.dark_red(),
-            extra_fields=[
-                ("Server Name", self.guild_name),
-                ("Server ID",   str(self.guild_id)),
-            ],
-        )
-
-        await interaction.response.send_message(
-            f"Left **{self.guild_name}** successfully.", ephemeral=True
-        )
-        await guild.leave()
-        self.stop()
-
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message(
-                "This isn't your confirmation.", ephemeral=True
-            )
-            return
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
-        self.stop()
-
-
-class ServersView(discord.ui.View):
-    def __init__(self, guilds: list[discord.Guild], invoker: discord.User | discord.Member):
-        super().__init__(timeout=120)
-        self.add_item(LeaveServerSelect(guilds, invoker))
-
-
-@tree.command(name="servers", description="List all servers the bot is in, with an option to leave one.")
-async def list_servers(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    log_action(interaction.user, "/servers", "N/A")
-
-    guilds = bot.guilds
-    if not guilds:
-        await interaction.followup.send("I'm not in any servers.", ephemeral=True)
-        return
-
-    lines = []
-    for guild in guilds:
-        invite_url = "*(no invite channel available)*"
-        try:
-            for channel in guild.text_channels:
-                if channel.permissions_for(guild.me).create_instant_invite:
-                    invite = await channel.create_invite(max_age=0, max_uses=0, unique=False)
-                    invite_url = invite.url
-                    break
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-        lines.append(
-            f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}"
-        )
-
-    embed = discord.Embed(
-        title=f"🌐 Servers ({len(guilds)})",
-        description="\n\n".join(lines),
-        color=discord.Color.blurple(),
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=f"Requested by {interaction.user}")
-
-    await interaction.followup.send(
-        embed=embed,
-        view=ServersView(guilds, interaction.user),
-        ephemeral=True,
-    )
-
-
-# ─── Run ──────────────────────────────────────────────────
 
 bot.run(BOT_TOKEN)
