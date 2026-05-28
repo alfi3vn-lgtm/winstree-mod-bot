@@ -494,11 +494,14 @@ def is_spamming(user_id: int) -> bool:
 
 @bot.event
 async def on_ready():
-    await tree.sync()
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print("Slash commands synced.")
+    try:
+        await tree.sync()
+        print("Slash commands synced.")
+    except Exception as e:
+        print(f"ERROR syncing commands: {e}")
 
-    # Leave any guild that isn't the allowed one
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
     for guild in bot.guilds:
         if guild.id != ALLOWED_GUILD_ID:
             print(f"[GUILD GUARD] Leaving unauthorised guild: {guild.name} ({guild.id})")
