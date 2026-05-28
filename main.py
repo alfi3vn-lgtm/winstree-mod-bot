@@ -123,15 +123,15 @@ async def send_action_log(
         color=color,
         timestamp=datetime.datetime.now(timezone.utc),
     )
-    embed.add_field(name="Command",    value=f"`{command}`",                                                             inline=False)
-    embed.add_field(name="Moderator",  value=f"{moderator.mention} — {moderator} (`{moderator.id}`)",                   inline=False)
+    embed.add_field(name="Command",   value=f"`{command}`",                                           inline=False)
+    embed.add_field(name="Moderator", value=f"{moderator.mention} — {moderator} (`{moderator.id}`)", inline=False)
     if target:
-        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",                            inline=False)
-    embed.add_field(name="Reason",     value=reason,                                                                     inline=False)
+        embed.add_field(name="Target", value=f"{target.mention} — {target} (`{target.id}`)",         inline=False)
+    embed.add_field(name="Reason",    value=reason,                                                   inline=False)
     if extra_fields:
         for name, value in extra_fields:
             embed.add_field(name=name, value=value, inline=False)
-    embed.add_field(name="Time",       value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                                   inline=False)
+    embed.add_field(name="Time",      value=now_uk.strftime("%d/%m/%Y at %H:%M:%S"),                  inline=False)
 
     if target:
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -365,15 +365,28 @@ def get_user_log(target_id: int) -> dict:
 
     for row in timeout_sheet.get_all_values()[4:]:
         if len(row) >= 6 and row[2] == str(target_id):
-            result["timeouts"].append({"date": row[3], "reason": row[3], "duration": row[4], "mod": row[5] if len(row) > 5 else "N/A"})
+            result["timeouts"].append({
+                "date":     row[3],
+                "reason":   row[3],
+                "duration": row[4],
+                "mod":      row[5] if len(row) > 5 else "N/A",
+            })
 
     for row in kick_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["kicks"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+            result["kicks"].append({
+                "date":   row[3],
+                "reason": row[3],
+                "mod":    row[4] if len(row) > 4 else "N/A",
+            })
 
     for row in ban_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["bans"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+            result["bans"].append({
+                "date":   row[3],
+                "reason": row[3],
+                "mod":    row[4] if len(row) > 4 else "N/A",
+            })
 
     return result
 
@@ -466,7 +479,10 @@ async def on_message(message: discord.Message):
             if member is None:
                 return
 
-            reason = f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
+            reason = (
+                f"Auto-timeout: Sent more than {SPAM_MESSAGE_LIMIT} messages "
+                f"in {SPAM_WINDOW_SECONDS} seconds (spam detection)."
+            )
 
             # Log the action to the sheet and action log channel, but do NOT timeout the member
             log_timeout(bot.user, member, SPAM_TIMEOUT_MINUTES, "Minutes", reason)
@@ -529,15 +545,19 @@ async def on_message_delete(message: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{message.author.mention} — {message.author} (`{message.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)", inline=False)
-    embed.add_field(name="Deleted By",      value=deleted_by, inline=False)
-    embed.add_field(name="Message Content", value=content, inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
-    embed.add_field(name="Deleted At",      value=deleted_str, inline=True)
+    embed.add_field(name="Channel",         value=f"{message.channel.mention} (`{message.channel.id}`)",                  inline=False)
+    embed.add_field(name="Deleted By",      value=deleted_by,                                                              inline=False)
+    embed.add_field(name="Message Content", value=content,                                                                 inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str,                                                                inline=True)
+    embed.add_field(name="Deleted At",      value=deleted_str,                                                             inline=True)
 
     if message.attachments:
         attachment_links = "\n".join(a.proxy_url for a in message.attachments)
-        embed.add_field(name=f"Attachments ({len(message.attachments)})", value=attachment_links[:1024], inline=False)
+        embed.add_field(
+            name=f"Attachments ({len(message.attachments)})",
+            value=attachment_links[:1024],
+            inline=False,
+        )
 
     embed.set_thumbnail(url=message.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {message.id}")
@@ -574,12 +594,12 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
         timestamp=datetime.datetime.now(timezone.utc),
     )
     embed.add_field(name="Author",          value=f"{before.author.mention} — {before.author} (`{before.author.id}`)", inline=False)
-    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
-    embed.add_field(name="Before",          value=before_content, inline=False)
-    embed.add_field(name="After",           value=after_content, inline=False)
-    embed.add_field(name="Message Sent",    value=sent_str, inline=True)
-    embed.add_field(name="Edited At",       value=edited_str, inline=True)
-    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})", inline=False)
+    embed.add_field(name="Channel",         value=f"{before.channel.mention} (`{before.channel.id}`)",                 inline=False)
+    embed.add_field(name="Before",          value=before_content,                                                       inline=False)
+    embed.add_field(name="After",           value=after_content,                                                        inline=False)
+    embed.add_field(name="Message Sent",    value=sent_str,                                                             inline=True)
+    embed.add_field(name="Edited At",       value=edited_str,                                                           inline=True)
+    embed.add_field(name="Jump to Message", value=f"[Click here]({after.jump_url})",                                    inline=False)
 
     embed.set_thumbnail(url=before.author.display_avatar.url)
     embed.set_footer(text=f"Message ID: {before.id}")
@@ -714,7 +734,10 @@ async def remove_warn(
                 f"They now have **{warn_count}** warning(s) this session."
             )
         else:
-            await interaction.followup.send(f"**{member}** has no warnings on record for their current session.", ephemeral=True)
+            await interaction.followup.send(
+                f"**{member}** has no warnings on record for their current session.",
+                ephemeral=True,
+            )
     except Exception as e:
         await interaction.followup.send(f"Failed to remove warning: {e}", ephemeral=True)
 
@@ -834,13 +857,13 @@ async def view_logs(
         embed = discord.Embed(
             title=f"Moderation Log — {member}",
             color=discord.Color.orange(),
-            timestamp=datetime.datetime.now(timezone.utc)
+            timestamp=datetime.datetime.now(timezone.utc),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
             name="📋 Session Info",
             value=f"Current session: **{current_session}** (warns reset on kick/ban, not on voluntary leave)",
-            inline=False
+            inline=False,
         )
 
         if warns:
@@ -853,19 +876,28 @@ async def view_logs(
             embed.add_field(name="⚠️ Warnings (0)", value="None on record.", inline=False)
 
         if timeouts:
-            timeout_lines = "\n".join(f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})" for i, t in enumerate(timeouts))
+            timeout_lines = "\n".join(
+                f"`{i+1}.` {t['date']} — {t['reason']} ({t['duration']})"
+                for i, t in enumerate(timeouts)
+            )
             embed.add_field(name=f"⏱️ Timeouts ({len(timeouts)})", value=timeout_lines[:1024], inline=False)
         else:
             embed.add_field(name="⏱️ Timeouts (0)", value="None on record.", inline=False)
 
         if kicks:
-            kick_lines = "\n".join(f"`{i+1}.` {k['date']} — {k['reason']}" for i, k in enumerate(kicks))
+            kick_lines = "\n".join(
+                f"`{i+1}.` {k['date']} — {k['reason']}"
+                for i, k in enumerate(kicks)
+            )
             embed.add_field(name=f"👢 Kicks ({len(kicks)})", value=kick_lines[:1024], inline=False)
         else:
             embed.add_field(name="👢 Kicks (0)", value="None on record.", inline=False)
 
         if bans:
-            ban_lines = "\n".join(f"`{i+1}.` {b['date']} — {b['reason']}" for i, b in enumerate(bans))
+            ban_lines = "\n".join(
+                f"`{i+1}.` {b['date']} — {b['reason']}"
+                for i, b in enumerate(bans)
+            )
             embed.add_field(name=f"⛔ Bans ({len(bans)})", value=ban_lines[:1024], inline=False)
         else:
             embed.add_field(name="⛔ Bans (0)", value="None on record.", inline=False)
@@ -875,171 +907,6 @@ async def view_logs(
 
     except Exception as e:
         await interaction.followup.send(f"Failed to retrieve logs: {e}", ephemeral=True)
-
-
-@tree.command(name="servers", description="List all servers the bot is in, with invite links.")
-async def list_servers(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    log_action(interaction.user, "/servers", "N/A")
-
-    guilds = bot.guilds
-    if not guilds:
-        await interaction.followup.send("I'm not in any servers.", ephemeral=True)
-        return
-
-    lines = []
-    for guild in guilds:
-        invite_url = "*(no invite channel available)*"
-        try:
-            invite_channel = None
-            for channel in guild.text_channels:
-                perms = channel.permissions_for(guild.me)
-                if perms.create_instant_invite:
-                    invite_channel = channel
-                    break
-
-            if invite_channel:
-                invite = await invite_channel.create_invite(max_age=0, max_uses=0, unique=False)
-                invite_url = invite.url
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-        lines.append(f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}")
-
-    embed = discord.Embed(
-        title=f"🌐 Servers ({len(guilds)})",
-        description="\n\n".join(lines),
-        color=discord.Color.blurple(),
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=f"Requested by {interaction.user}")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-# ─── Servers Command (with Leave option) ──────────────────
-
-class LeaveServerSelect(discord.ui.Select):
-    def __init__(self, guilds: list[discord.Guild]):
-        options = [
-            discord.SelectOption(
-                label=guild.name[:100],
-                value=str(guild.id),
-                description=f"{guild.member_count} members · ID: {guild.id}",
-            )
-            for guild in guilds
-        ]
-        super().__init__(
-            placeholder="Choose a server to leave…",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        guild_id   = int(self.values[0])
-        guild      = bot.get_guild(guild_id)
-        guild_name = guild.name if guild else f"Unknown ({guild_id})"
-
-        view = ConfirmLeaveView(guild_id=guild_id, guild_name=guild_name, invoker=interaction.user)
-        await interaction.response.send_message(
-            f"⚠️ Are you sure you want the bot to **leave {guild_name}**? This cannot be undone.",
-            view=view,
-            ephemeral=True,
-        )
-
-
-class ConfirmLeaveView(discord.ui.View):
-    def __init__(self, guild_id: int, guild_name: str, invoker: discord.User | discord.Member):
-        super().__init__(timeout=60)
-        self.guild_id   = guild_id
-        self.guild_name = guild_name
-        self.invoker    = invoker
-
-    @discord.ui.button(label="✅ Confirm Leave", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
-            return
-
-        guild = bot.get_guild(self.guild_id)
-        if guild is None:
-            await interaction.response.send_message(
-                "Could not find that server — it may have already been left.", ephemeral=True
-            )
-            self.stop()
-            return
-
-        log_action(interaction.user, f"/servers → leave {self.guild_name} ({self.guild_id})", "Manual leave via /servers")
-        await send_action_log(
-            moderator=interaction.user,
-            command=f"/servers → Leave Server",
-            reason="Manual leave via /servers command",
-            color=discord.Color.dark_red(),
-            extra_fields=[
-                ("Server Name", self.guild_name),
-                ("Server ID",   str(self.guild_id)),
-            ],
-        )
-
-        await interaction.response.send_message(
-            f"Left **{self.guild_name}** successfully.", ephemeral=True
-        )
-        await guild.leave()
-        self.stop()
-
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
-            return
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
-        self.stop()
-
-
-class ServersView(discord.ui.View):
-    def __init__(self, guilds: list[discord.Guild]):
-        super().__init__(timeout=120)
-        self.add_item(LeaveServerSelect(guilds))
-
-
-@tree.command(name="servers", description="List all servers the bot is in, with an option to leave one.")
-async def list_servers(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    log_action(interaction.user, "/servers", "N/A")
-
-    guilds = bot.guilds
-    if not guilds:
-        await interaction.followup.send("I'm not in any servers.", ephemeral=True)
-        return
-
-    lines = []
-    for guild in guilds:
-        invite_url = "*(no invite channel available)*"
-        try:
-            for channel in guild.text_channels:
-                if channel.permissions_for(guild.me).create_instant_invite:
-                    invite = await channel.create_invite(max_age=0, max_uses=0, unique=False)
-                    invite_url = invite.url
-                    break
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-        lines.append(
-            f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}"
-        )
-
-    embed = discord.Embed(
-        title=f"🌐 Servers ({len(guilds)})",
-        description="\n\n".join(lines),
-        color=discord.Color.blurple(),
-        timestamp=datetime.datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=f"Requested by {interaction.user}")
-
-    await interaction.followup.send(
-        embed=embed,
-        view=ServersView(guilds),
-        ephemeral=True,
-    )
 
 
 @tree.command(name="createchannels", description="Bulk-create a list of channels in this server.")
@@ -1084,5 +951,159 @@ async def create_channels(
         msg += f"\n❌ Failed: {', '.join(failed)}"
     await interaction.followup.send(msg, ephemeral=True)
 
+
+# ─── Servers Command (with Leave option) ──────────────────
+
+class LeaveServerSelect(discord.ui.Select):
+    def __init__(self, guilds: list[discord.Guild], invoker: discord.User | discord.Member):
+        self.invoker = invoker
+        options = [
+            discord.SelectOption(
+                label=guild.name[:100],
+                value=str(guild.id),
+                description=f"{guild.member_count} members · ID: {guild.id}",
+            )
+            for guild in guilds
+        ]
+        super().__init__(
+            placeholder="Choose a server to leave…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.invoker.id:
+            await interaction.response.send_message(
+                "This menu isn't for you.", ephemeral=True
+            )
+            return
+
+        guild_id   = int(self.values[0])
+        guild      = bot.get_guild(guild_id)
+        guild_name = guild.name if guild else f"Unknown ({guild_id})"
+
+        view = ConfirmLeaveView(
+            guild_id=guild_id,
+            guild_name=guild_name,
+            invoker=interaction.user,
+        )
+        await interaction.response.send_message(
+            f"⚠️ Are you sure you want the bot to **leave {guild_name}**? This cannot be undone.",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class ConfirmLeaveView(discord.ui.View):
+    def __init__(
+        self,
+        guild_id: int,
+        guild_name: str,
+        invoker: discord.User | discord.Member,
+    ):
+        super().__init__(timeout=60)
+        self.guild_id   = guild_id
+        self.guild_name = guild_name
+        self.invoker    = invoker
+
+    @discord.ui.button(label="✅ Confirm Leave", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker.id:
+            await interaction.response.send_message(
+                "This isn't your confirmation.", ephemeral=True
+            )
+            return
+
+        guild = bot.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message(
+                "Could not find that server — it may have already been left.",
+                ephemeral=True,
+            )
+            self.stop()
+            return
+
+        log_action(
+            interaction.user,
+            f"/servers → leave {self.guild_name} ({self.guild_id})",
+            "Manual leave via /servers",
+        )
+        await send_action_log(
+            moderator=interaction.user,
+            command="/servers → Leave Server",
+            reason="Manual leave via /servers command",
+            color=discord.Color.dark_red(),
+            extra_fields=[
+                ("Server Name", self.guild_name),
+                ("Server ID",   str(self.guild_id)),
+            ],
+        )
+
+        await interaction.response.send_message(
+            f"Left **{self.guild_name}** successfully.", ephemeral=True
+        )
+        await guild.leave()
+        self.stop()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker.id:
+            await interaction.response.send_message(
+                "This isn't your confirmation.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message("Cancelled.", ephemeral=True)
+        self.stop()
+
+
+class ServersView(discord.ui.View):
+    def __init__(self, guilds: list[discord.Guild], invoker: discord.User | discord.Member):
+        super().__init__(timeout=120)
+        self.add_item(LeaveServerSelect(guilds, invoker))
+
+
+@tree.command(name="servers", description="List all servers the bot is in, with an option to leave one.")
+async def list_servers(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    log_action(interaction.user, "/servers", "N/A")
+
+    guilds = bot.guilds
+    if not guilds:
+        await interaction.followup.send("I'm not in any servers.", ephemeral=True)
+        return
+
+    lines = []
+    for guild in guilds:
+        invite_url = "*(no invite channel available)*"
+        try:
+            for channel in guild.text_channels:
+                if channel.permissions_for(guild.me).create_instant_invite:
+                    invite = await channel.create_invite(max_age=0, max_uses=0, unique=False)
+                    invite_url = invite.url
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        lines.append(
+            f"**{guild.name}** (`{guild.id}`) — {guild.member_count} members\n{invite_url}"
+        )
+
+    embed = discord.Embed(
+        title=f"🌐 Servers ({len(guilds)})",
+        description="\n\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Requested by {interaction.user}")
+
+    await interaction.followup.send(
+        embed=embed,
+        view=ServersView(guilds, interaction.user),
+        ephemeral=True,
+    )
+
+
+# ─── Run ──────────────────────────────────────────────────
 
 bot.run(BOT_TOKEN)
