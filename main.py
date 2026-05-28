@@ -19,8 +19,8 @@ _service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 # Only operate in this guild — leave all others
 ALLOWED_GUILD_ID = 1484747145893642373
 
-# The role given to "banned" members instead of a real Discord ban
-BAN_ROLE_ID = 1509602308684517609
+# The role given to "excluded" members instead of a real Discord ban
+EXCLUDE_ROLE_ID = 1509602308684517609
 
 # Channel IDs to monitor for message logs
 MONITORED_CHANNEL_IDS = {
@@ -48,7 +48,7 @@ SPAM_TIMEOUT_MINUTES = 10
 _spam_tracker: dict[int, collections.deque] = {}
 _spam_cooldown: set[int] = set()
 
-# Members who were kicked or banned get a fresh session on next join.
+# Members who were kicked or excluded get a fresh session on next join.
 # Voluntary leaves do NOT trigger a new session — warns carry over.
 _flagged_for_new_session: set[int] = set()
 # ──────────────────────────────────────────────────────────
@@ -60,12 +60,11 @@ SCOPES = [
 
 creds         = Credentials.from_service_account_info(_service_account_info, scopes=SCOPES)
 gc            = gspread.authorize(creds)
-# After (1 API call to open, then local lookups)
 _spreadsheet  = gc.open(SHEET_NAME)
 timeout_sheet = _spreadsheet.worksheet("Timeout Logs")
 warn_sheet    = _spreadsheet.worksheet("Warn Logs")
 kick_sheet    = _spreadsheet.worksheet("Kick Logs")
-ban_sheet     = _spreadsheet.worksheet("Ban Logs")
+exclude_sheet = _spreadsheet.worksheet("Ban Logs")
 action_sheet  = _spreadsheet.worksheet("Moderator Action Log")
 session_sheet = _spreadsheet.worksheet("Join Sessions")
 role_sheet    = _spreadsheet.worksheet("Role Log")
@@ -176,7 +175,7 @@ def get_current_session_id(target_id: int) -> int:
 def create_new_session(target_id: int) -> int:
     """
     Create a new session entry for a user.
-    Only called when a user rejoins after being kicked or banned.
+    Only called when a user rejoins after being kicked or excluded.
     Returns the new session ID.
     """
     current = get_current_session_id(target_id)
@@ -252,11 +251,11 @@ def log_kick(moderator, target, reason):
     )
 
 
-def log_ban(moderator, target, reason):
-    next_row = get_next_row(ban_sheet)
+def log_exclude(moderator, target, reason):
+    next_row = get_next_row(exclude_sheet)
     date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
 
-    ban_sheet.update(
+    exclude_sheet.update(
         values=[
             [str(target), str(target.id), date_str, reason, str(moderator.id)]
         ],
@@ -266,14 +265,13 @@ def log_ban(moderator, target, reason):
 
 # ─── Role Log Utilities ───────────────────────────────────
 
-def log_role_ban(target: discord.Member, roles: list[discord.Role]):
+def log_role_exclude(target: discord.Member, roles: list[discord.Role]):
     """
-    Save the member's current roles to the Role Log sheet before applying the ban role.
+    Save the member's current roles to the Role Log sheet before applying the exclude role.
     Columns: B=Username, C=UserID, D=RoleIDs (comma-separated)
     """
     next_row  = get_next_row(role_sheet)
     role_ids  = ",".join(str(r.id) for r in roles)
-    date_str  = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
 
     role_sheet.update(
         values=[[str(target), str(target.id), role_ids]],
@@ -301,9 +299,9 @@ def remove_role_log_entry(sheet_row: int):
     role_sheet.delete_rows(sheet_row)
 
 
-# ─── Ban Role Helper ──────────────────────────────────────
+# ─── Exclude Role Helper ──────────────────────────────────
 
-async def apply_ban_role(
+async def apply_exclude_role(
     guild: discord.Guild,
     member: discord.Member,
     reason: str,
@@ -313,23 +311,23 @@ async def apply_ban_role(
     Instead of a real Discord ban:
     1. Save the member's current roles to the Role Log sheet.
     2. Remove all their roles.
-    3. Assign the BAN_ROLE_ID role.
-    4. Log to ban_sheet and flag for a new session.
+    3. Assign the EXCLUDE_ROLE_ID role.
+    4. Log to exclude_sheet and flag for a new session.
     """
-    ban_role = guild.get_role(BAN_ROLE_ID)
-    if ban_role is None:
-        raise ValueError(f"Ban role {BAN_ROLE_ID} not found in guild.")
+    exclude_role = guild.get_role(EXCLUDE_ROLE_ID)
+    if exclude_role is None:
+        raise ValueError(f"Exclude role {EXCLUDE_ROLE_ID} not found in guild.")
 
     # Roles to save: everything except @everyone
     roles_to_save = [r for r in member.roles if r != guild.default_role]
 
     # Persist to sheet before touching roles
-    log_role_ban(member, roles_to_save)
+    log_role_exclude(member, roles_to_save)
 
-    # Swap roles: remove all, add ban role
-    await member.edit(roles=[ban_role], reason=reason)
+    # Swap roles: remove all, add exclude role
+    await member.edit(roles=[exclude_role], reason=reason)
 
-    log_ban(moderator, member, reason)
+    log_exclude(moderator, member, reason)
     _flagged_for_new_session.add(member.id)
 
 
@@ -446,7 +444,7 @@ def get_kick_count_this_month(target_id: int) -> int:
 # ─── View Log Utility ─────────────────────────────────────
 
 def get_user_log(target_id: int) -> dict:
-    result = {"warns": [], "timeouts": [], "kicks": [], "bans": []}
+    result = {"warns": [], "timeouts": [], "kicks": [], "excludes": []}
 
     for row in warn_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
@@ -465,9 +463,9 @@ def get_user_log(target_id: int) -> dict:
         if len(row) >= 5 and row[2] == str(target_id):
             result["kicks"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
 
-    for row in ban_sheet.get_all_values()[4:]:
+    for row in exclude_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
-            result["bans"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+            result["excludes"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
 
     return result
 
@@ -502,6 +500,7 @@ async def on_ready():
 
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
+    # Leave any guild that isn't the allowed one
     for guild in bot.guilds:
         if guild.id != ALLOWED_GUILD_ID:
             print(f"[GUILD GUARD] Leaving unauthorised guild: {guild.name} ({guild.id})")
@@ -520,13 +519,13 @@ async def on_guild_join(guild: discord.Guild):
 async def on_member_join(member: discord.Member):
     """
     When a member rejoins, only create a new session if they were previously
-    kicked or banned. Voluntary leaves carry the same session forward so warns
+    kicked or excluded. Voluntary leaves carry the same session forward so warns
     are not wiped by simply leaving and rejoining.
     """
     if member.id in _flagged_for_new_session:
         _flagged_for_new_session.discard(member.id)
         new_sid = create_new_session(member.id)
-        print(f"[SESSION] New session ({new_sid}) created for {member} ({member.id}) — rejoined after kick/ban.")
+        print(f"[SESSION] New session ({new_sid}) created for {member} ({member.id}) — rejoined after kick/exclude.")
     else:
         current_sid = get_current_session_id(member.id)
         print(f"[SESSION] {member} ({member.id}) rejoined voluntarily — keeping session {current_sid}, warns unchanged.")
@@ -742,7 +741,6 @@ async def timeout_member(
             log_kick(interaction.user, member, "Auto-kick: 5 timeouts in 1 week.")
             log_action(interaction.user, f"/timeout @{member} [AUTO-KICK TRIGGERED]", "5 timeouts in 1 week")
 
-            # Flag for a fresh session when they rejoin
             _flagged_for_new_session.add(member.id)
 
             await send_action_log(
@@ -888,35 +886,31 @@ async def warn_member(
             log_kick(interaction.user, member, "Auto-kick: Received 3 warnings this session.")
             log_action(interaction.user, f"/warn @{member} [AUTO-KICK TRIGGERED]", "Reached 3 warnings this session")
 
-            # Flag for a fresh session when they rejoin
             _flagged_for_new_session.add(member.id)
 
             kick_count = get_kick_count_this_month(member.id)
 
             if kick_count >= 3:
-                # Fetch fresh member object after kick — they may no longer be in the guild,
-                # so we do a best-effort DM then apply the ban role if they're still present.
                 live_member = interaction.guild.get_member(member.id)
                 if live_member:
                     try:
                         await live_member.send(
-                            f"You have also been **banned** from the server.\n"
+                            f"You have also been **excluded** from the server.\n"
                             f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
                         )
                     except discord.Forbidden:
                         pass
 
-                    await apply_ban_role(
+                    await apply_exclude_role(
                         interaction.guild, live_member,
-                        "Auto-ban: 3 kicks in 1 month.",
+                        "Auto-exclude: 3 kicks in 1 month.",
                         interaction.user,
                     )
                 else:
-                    # Member already left after kick; log the ban anyway
-                    log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
+                    log_exclude(interaction.user, member, "Auto-exclude: 3 kicks in 1 month.")
                     _flagged_for_new_session.add(member.id)
 
-                log_action(interaction.user, f"/warn @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+                log_action(interaction.user, f"/warn @{member} [AUTO-EXCLUDE TRIGGERED]", "3 kicks in 1 month")
 
                 await send_action_log(
                     moderator=interaction.user,
@@ -927,14 +921,14 @@ async def warn_member(
                     extra_fields=[
                         ("Warn Count (This Session)", str(warn_count)),
                         ("⚠️ Auto-Kick Triggered", "Reached 3 warnings this session."),
-                        ("⛔ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                        ("⛔ Auto-Exclude Triggered", f"Received {kick_count} kicks in the last 30 days."),
                     ],
                 )
 
                 await interaction.followup.send(
                     f"Warned **{member}**.\nReason: {reason}\n\n"
                     f"⚠️ **{member}** has reached **3 warnings** this session and has been **kicked**.\n"
-                    f"⛔ They have also been **banned** (ban role applied) for receiving **{kick_count} kicks** in the last 30 days."
+                    f"⛔ They have also been **excluded** (exclude role applied) for receiving **{kick_count} kicks** in the last 30 days."
                 )
             else:
                 await send_action_log(
@@ -1026,33 +1020,31 @@ async def kick_member(
         await member.kick(reason=reason)
         log_kick(interaction.user, member, reason)
 
-        # Flag for a fresh session when they rejoin
         _flagged_for_new_session.add(member.id)
 
         kick_count = get_kick_count_this_month(member.id)
 
         if kick_count >= 3:
-            # Member was just kicked — check if still present before applying ban role
             live_member = interaction.guild.get_member(member.id)
             if live_member:
                 try:
                     await live_member.send(
-                        f"You have been **banned** from the server.\n"
+                        f"You have been **excluded** from the server.\n"
                         f"Reason: You have been kicked **{kick_count} times** in the last 30 days."
                     )
                 except discord.Forbidden:
                     pass
 
-                await apply_ban_role(
+                await apply_exclude_role(
                     interaction.guild, live_member,
-                    "Auto-ban: 3 kicks in 1 month.",
+                    "Auto-exclude: 3 kicks in 1 month.",
                     interaction.user,
                 )
             else:
-                log_ban(interaction.user, member, "Auto-ban: 3 kicks in 1 month.")
+                log_exclude(interaction.user, member, "Auto-exclude: 3 kicks in 1 month.")
                 _flagged_for_new_session.add(member.id)
 
-            log_action(interaction.user, f"/kick @{member} [AUTO-BAN TRIGGERED]", "3 kicks in 1 month")
+            log_action(interaction.user, f"/kick @{member} [AUTO-EXCLUDE TRIGGERED]", "3 kicks in 1 month")
 
             await send_action_log(
                 moderator=interaction.user,
@@ -1061,13 +1053,13 @@ async def kick_member(
                 target=member,
                 color=discord.Color.dark_red(),
                 extra_fields=[
-                    ("⚠️ Auto-Ban Triggered", f"Received {kick_count} kicks in the last 30 days."),
+                    ("⚠️ Auto-Exclude Triggered", f"Received {kick_count} kicks in the last 30 days."),
                 ],
             )
 
             await interaction.followup.send(
                 f"Kicked **{member}**.\nReason: {reason}\n\n"
-                f"⚠️ **{member}** has been **banned** (ban role applied) for receiving **{kick_count} kicks** in the last 30 days."
+                f"⚠️ **{member}** has been **excluded** (exclude role applied) for receiving **{kick_count} kicks** in the last 30 days."
             )
         else:
             await send_action_log(
@@ -1086,52 +1078,52 @@ async def kick_member(
         await interaction.followup.send(f"Failed to kick member: {e}", ephemeral=True)
 
 
-@tree.command(name="ban", description="Ban a member from the server (applies ban role, removes all other roles).")
+@tree.command(name="exclude", description="Exclude a member from the server (applies exclude role, removes all other roles).")
 @app_commands.describe(
-    member="The member to ban",
-    reason="Reason for the ban",
+    member="The member to exclude",
+    reason="Reason for the exclusion",
 )
-async def ban_member(
+async def exclude_member(
     interaction: discord.Interaction,
     member: discord.Member,
     reason: str,
 ):
     await interaction.response.defer()
-    log_action(interaction.user, f"/ban @{member}", reason)
+    log_action(interaction.user, f"/exclude @{member}", reason)
 
     try:
-        await apply_ban_role(interaction.guild, member, reason, interaction.user)
+        await apply_exclude_role(interaction.guild, member, reason, interaction.user)
 
         await send_action_log(
             moderator=interaction.user,
-            command=f"/ban @{member}",
+            command=f"/exclude @{member}",
             reason=reason,
             target=member,
             color=discord.Color.dark_red(),
         )
 
         await interaction.followup.send(
-            f"Banned **{member}**.\nReason: {reason}\n"
-            f"Their roles have been removed and the ban role has been applied. Previous roles are saved for restoration."
+            f"Excluded **{member}**.\nReason: {reason}\n"
+            f"Their roles have been removed and the exclude role has been applied. Previous roles are saved for restoration."
         )
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to manage that member's roles.", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"Failed to ban member: {e}", ephemeral=True)
+        await interaction.followup.send(f"Failed to exclude member: {e}", ephemeral=True)
 
 
-@tree.command(name="unban", description="Unban a user — removes the ban role and restores their previous roles.")
+@tree.command(name="unexclude", description="Unexclude a user — removes the exclude role and restores their previous roles.")
 @app_commands.describe(
-    user_id="The ID of the user to unban",
-    reason="Reason for the unban",
+    user_id="The ID of the user to unexclude",
+    reason="Reason for the unexclusion",
 )
-async def unban_member(
+async def unexclude_member(
     interaction: discord.Interaction,
     user_id: str,
     reason: str,
 ):
     await interaction.response.defer()
-    log_action(interaction.user, f"/unban {user_id}", reason)
+    log_action(interaction.user, f"/unexclude {user_id}", reason)
 
     try:
         target_id = int(user_id)
@@ -1139,13 +1131,12 @@ async def unban_member(
         await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
         return
 
-    # Look up saved roles in the Role Log sheet
     saved_role_ids, sheet_row = get_saved_roles(target_id)
 
     if sheet_row is None:
         await interaction.followup.send(
-            f"No ban role record found for user ID `{user_id}`. "
-            "They may not have been banned through this bot, or the record was already removed.",
+            f"No exclude role record found for user ID `{user_id}`. "
+            "They may not have been excluded through this bot, or the record was already removed.",
             ephemeral=True,
         )
         return
@@ -1159,9 +1150,6 @@ async def unban_member(
         )
         return
 
-    ban_role = interaction.guild.get_role(BAN_ROLE_ID)
-
-    # Resolve saved role objects, skipping any that no longer exist
     roles_to_restore = []
     missing_role_ids = []
     for rid in saved_role_ids:
@@ -1174,12 +1162,11 @@ async def unban_member(
     try:
         await member.edit(roles=roles_to_restore, reason=reason)
 
-        # Remove the entry from the Role Log sheet
         remove_role_log_entry(sheet_row)
 
         await send_action_log(
             moderator=interaction.user,
-            command=f"/unban {user_id}",
+            command=f"/unexclude {user_id}",
             reason=reason,
             target=member,
             color=discord.Color.green(),
@@ -1194,7 +1181,7 @@ async def unban_member(
 
         restored_str = ", ".join(r.name for r in roles_to_restore) if roles_to_restore else "None"
         reply = (
-            f"Unbanned **{member}** — ban role removed and previous roles restored.\n"
+            f"Unexcluded **{member}** — exclude role removed and previous roles restored.\n"
             f"Reason: {reason}\n"
             f"**Restored roles:** {restored_str}"
         )
@@ -1206,7 +1193,7 @@ async def unban_member(
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to manage that member's roles.", ephemeral=True)
     except discord.HTTPException as e:
-        await interaction.followup.send(f"Failed to unban member: {e}", ephemeral=True)
+        await interaction.followup.send(f"Failed to unexclude member: {e}", ephemeral=True)
 
 
 @tree.command(name="viewlogs", description="View the full moderation log for a user.")
@@ -1234,14 +1221,13 @@ async def view_logs(
         warns    = logs["warns"]
         timeouts = logs["timeouts"]
         kicks    = logs["kicks"]
-        bans     = logs["bans"]
+        excludes = logs["excludes"]
 
         current_session = get_current_session_id(member.id)
 
-        # Check if currently ban-roled
-        _, ban_entry_row = get_saved_roles(member.id)
-        ban_role         = interaction.guild.get_role(BAN_ROLE_ID)
-        is_banned        = ban_role is not None and ban_role in member.roles
+        _, exclude_entry_row = get_saved_roles(member.id)
+        exclude_role         = interaction.guild.get_role(EXCLUDE_ROLE_ID)
+        is_excluded          = exclude_role is not None and exclude_role in member.roles
 
         embed = discord.Embed(
             title=f"Moderation Log — {member}",
@@ -1252,8 +1238,8 @@ async def view_logs(
         embed.add_field(
             name="📋 Session Info",
             value=(
-                f"Current session: **{current_session}** (warns reset on kick/ban, not on voluntary leave)\n"
-                + (f"🚫 **Currently banned** (ban role active)" if is_banned else "")
+                f"Current session: **{current_session}** (warns reset on kick/exclude, not on voluntary leave)\n"
+                + (f"🚫 **Currently excluded** (exclude role active)" if is_excluded else "")
             ),
             inline=False
         )
@@ -1279,11 +1265,11 @@ async def view_logs(
         else:
             embed.add_field(name="👢 Kicks (0)", value="None on record.", inline=False)
 
-        if bans:
-            ban_lines = "\n".join(f"`{i+1}.` {b['date']} — {b['reason']}" for i, b in enumerate(bans))
-            embed.add_field(name=f"⛔ Bans ({len(bans)})", value=ban_lines[:1024], inline=False)
+        if excludes:
+            exclude_lines = "\n".join(f"`{i+1}.` {e['date']} — {e['reason']}" for i, e in enumerate(excludes))
+            embed.add_field(name=f"⛔ Exclusions ({len(excludes)})", value=exclude_lines[:1024], inline=False)
         else:
-            embed.add_field(name="⛔ Bans (0)", value="None on record.", inline=False)
+            embed.add_field(name="⛔ Exclusions (0)", value="None on record.", inline=False)
 
         embed.set_footer(text=f"User ID: {member.id}")
         await interaction.followup.send(embed=embed, ephemeral=True)
