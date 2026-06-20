@@ -67,6 +67,7 @@ timeout_sheet = _spreadsheet.worksheet("Timeout Logs")
 warn_sheet    = _spreadsheet.worksheet("Warn Logs")
 kick_sheet    = _spreadsheet.worksheet("Kick Logs")
 exclude_sheet = _spreadsheet.worksheet("Exclusion Logs")
+ban_sheet     = _spreadsheet.worksheet("Ban Logs")
 action_sheet  = _spreadsheet.worksheet("Moderator Action Log")
 session_sheet = _spreadsheet.worksheet("Join Sessions")
 role_sheet    = _spreadsheet.worksheet("Role Log")
@@ -265,6 +266,18 @@ def log_exclude(moderator, target, reason):
     )
 
 
+def log_ban(moderator, target, reason, delete_days=0):
+    next_row = get_next_row(ban_sheet)
+    date_str = datetime.datetime.now(timezone.utc).strftime("%d/%m/%Y")
+
+    ban_sheet.update(
+        values=[
+            [str(target), str(target.id), date_str, reason, str(delete_days), str(moderator.id)]
+        ],
+        range_name=f"B{next_row}:G{next_row}"
+    )
+
+
 # ─── Role Log Utilities ───────────────────────────────────
 
 def log_role_exclude(target: discord.Member, roles: list[discord.Role]):
@@ -446,7 +459,7 @@ def get_kick_count_this_month(target_id: int) -> int:
 # ─── View Log Utility ─────────────────────────────────────
 
 def get_user_log(target_id: int) -> dict:
-    result = {"warns": [], "timeouts": [], "kicks": [], "excludes": []}
+    result = {"warns": [], "timeouts": [], "kicks": [], "excludes": [], "bans": []}
 
     for row in warn_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
@@ -468,6 +481,10 @@ def get_user_log(target_id: int) -> dict:
     for row in exclude_sheet.get_all_values()[4:]:
         if len(row) >= 5 and row[2] == str(target_id):
             result["excludes"].append({"date": row[3], "reason": row[3], "mod": row[4] if len(row) > 4 else "N/A"})
+
+    for row in ban_sheet.get_all_values()[4:]:
+        if len(row) >= 5 and row[2] == str(target_id):
+            result["bans"].append({"date": row[3], "reason": row[3], "mod": row[5] if len(row) > 5 else "N/A"})
 
     return result
 
@@ -1164,6 +1181,101 @@ async def kick_member(
         await interaction.followup.send(f"Failed to kick member: {e}", ephemeral=True)
 
 
+@tree.command(name="ban", description="Ban a member from the server.")
+@app_commands.describe(
+    member="The member to ban",
+    reason="Reason for the ban",
+    delete_days="Number of days of message history to delete (0–7, default 0)",
+)
+async def ban_member(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str,
+    delete_days: int = 0,
+):
+    await interaction.response.defer()
+    log_action(interaction.user, f"/ban @{member}", reason)
+
+    if not 0 <= delete_days <= 7:
+        await interaction.followup.send("delete_days must be between 0 and 7.", ephemeral=True)
+        return
+
+    try:
+        try:
+            await member.send(
+                f"You have been **banned** from **{interaction.guild.name}**.\n"
+                f"Reason: {reason}"
+            )
+        except discord.Forbidden:
+            pass
+
+        await member.ban(reason=reason, delete_message_days=delete_days)
+        log_ban(interaction.user, member, reason, delete_days)
+        log_action(interaction.user, f"/ban @{member}", reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/ban @{member}",
+            reason=reason,
+            target=member,
+            color=discord.Color.dark_red(),
+            extra_fields=[("Messages Deleted", f"{delete_days} day(s)")],
+        )
+
+        await interaction.followup.send(
+            f"Banned **{member}**.\nReason: {reason}\n"
+            f"Message history deleted: **{delete_days}** day(s)."
+        )
+
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to ban that member.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Failed to ban member: {e}", ephemeral=True)
+
+
+@tree.command(name="unban", description="Unban a user by their ID.")
+@app_commands.describe(
+    user_id="The ID of the user to unban",
+    reason="Reason for the unban",
+)
+async def unban_member(
+    interaction: discord.Interaction,
+    user_id: str,
+    reason: str,
+):
+    await interaction.response.defer()
+    log_action(interaction.user, f"/unban {user_id}", reason)
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        await interaction.followup.send("Invalid user ID provided.", ephemeral=True)
+        return
+
+    try:
+        ban_entry = await interaction.guild.fetch_ban(discord.Object(id=target_id))
+        user      = ban_entry.user
+
+        await interaction.guild.unban(user, reason=reason)
+
+        await send_action_log(
+            moderator=interaction.user,
+            command=f"/unban {user_id}",
+            reason=reason,
+            color=discord.Color.green(),
+            extra_fields=[("Unbanned User", f"{user} (`{user.id}`)")],
+        )
+
+        await interaction.followup.send(f"Unbanned **{user}**.\nReason: {reason}")
+
+    except discord.NotFound:
+        await interaction.followup.send(f"No ban found for user ID `{user_id}`.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to unban members.", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Failed to unban: {e}", ephemeral=True)
+
+
 @tree.command(name="exclude", description="Exclude a member from the server (applies exclude role, removes all other roles).")
 @app_commands.describe(
     member="The member to exclude",
@@ -1308,6 +1420,7 @@ async def view_logs(
         timeouts = logs["timeouts"]
         kicks    = logs["kicks"]
         excludes = logs["excludes"]
+        bans     = logs["bans"]
 
         current_session = get_current_session_id(member.id)
 
@@ -1356,6 +1469,12 @@ async def view_logs(
             embed.add_field(name=f"⛔ Exclusions ({len(excludes)})", value=exclude_lines[:1024], inline=False)
         else:
             embed.add_field(name="⛔ Exclusions (0)", value="None on record.", inline=False)
+
+        if bans:
+            ban_lines = "\n".join(f"`{i+1}.` {b['date']} — {b['reason']}" for i, b in enumerate(bans))
+            embed.add_field(name=f"🔨 Bans ({len(bans)})", value=ban_lines[:1024], inline=False)
+        else:
+            embed.add_field(name="🔨 Bans (0)", value="None on record.", inline=False)
 
         embed.set_footer(text=f"User ID: {member.id}")
         await interaction.followup.send(embed=embed, ephemeral=True)
