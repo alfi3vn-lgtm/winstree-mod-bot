@@ -18,7 +18,7 @@ SHEET_NAME = os.environ.get("SHEET_NAME", "WA | Moderation Logs")
 _service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 
 # Only operate in this guild — leave all others
-ALLOWED_GUILD_ID = 1484747145893642373
+ALLOWED_GUILD_ID = 1512770726678102046
 
 # The role given to "excluded" members instead of a real Discord ban
 EXCLUDE_ROLE_ID = 1509602308684517609
